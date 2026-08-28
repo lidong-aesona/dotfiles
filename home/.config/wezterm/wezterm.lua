@@ -44,4 +44,10 @@ wezterm.on("window-focus-changed", function(window)
 	window:set_config_overrides(overrides)
 end)
 
+-- iTerm2-style splits: Cmd+D opens a pane to the right, Cmd+Shift+D below.
+config.keys = {
+	{ key = "d", mods = "CMD", action = wezterm.action.SplitHorizontal({ domain = "CurrentPaneDomain" }) },
+	{ key = "d", mods = "CMD|SHIFT", action = wezterm.action.SplitVertical({ domain = "CurrentPaneDomain" }) },
+}
+
 return config
