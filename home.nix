@@ -26,8 +26,18 @@ in
     enable = true;
     autosuggestion.enable = true;      # ghost text from history
     syntaxHighlighting.enable = true;  # commands turn green when valid
+    history.findNoDups = true;         # arrow-up search skips repeated matches
     initContent = ''
       bindkey '^f' autosuggest-accept
+
+      # Arrow keys search history by what is already typed, like oh-my-zsh did.
+      autoload -U up-line-or-beginning-search down-line-or-beginning-search
+      zle -N up-line-or-beginning-search
+      zle -N down-line-or-beginning-search
+      bindkey '^[[A' up-line-or-beginning-search
+      bindkey '^[[B' down-line-or-beginning-search
+      bindkey '^[OA' up-line-or-beginning-search
+      bindkey '^[OB' down-line-or-beginning-search
     '';
     shellAliases = {
       ".." = "cd ..";
