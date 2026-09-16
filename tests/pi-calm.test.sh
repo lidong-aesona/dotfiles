@@ -25,7 +25,17 @@ set -u
 
 TMP_ROOT=$(dotfiles_test_tmproot pi-calm)
 CALM_DIR="$ROOT/home/.pi/agent/extensions/calm"
-PI_PACKAGE_DIR=${PI_CALM_TEST_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
+default_pi_package_dir() {
+  local pkg=@earendil-works/pi-coding-agent brew_prefix
+  # configuration.nix installs Pi via Homebrew, which keeps it outside `npm root -g`.
+  if brew_prefix=$(brew --prefix pi-coding-agent 2>/dev/null) \
+    && [ -f "$brew_prefix/libexec/lib/node_modules/$pkg/package.json" ]; then
+    printf '%s\n' "$brew_prefix/libexec/lib/node_modules/$pkg"
+    return
+  fi
+  printf '%s\n' "$(npm root -g 2>/dev/null)/$pkg"
+}
+PI_PACKAGE_DIR=${PI_CALM_TEST_PACKAGE_DIR:-"$(default_pi_package_dir)"}
 TMUX_SOCKET="pi-calm-test-$$"
 TMUX_SESSION="pi-calm-e2e"
 

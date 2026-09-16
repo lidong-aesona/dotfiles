@@ -6,7 +6,7 @@
           "contextWindow": 272000
         },
         "gpt-5.6-sol": {
-          "contextWindow": 272000
+          "contextWindow": 1050000
         },
         "gpt-5.6-terra": {
           "contextWindow": 272000

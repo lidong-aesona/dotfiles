@@ -1,7 +1,55 @@
 {
-  "theme": "dark-ansi",
   "statusLine": {
     "type": "command",
-    "command": "input=$(cat); model=$(echo \"$input\" | jq -r '.model.display_name'); used=$(echo \"$input\" | jq -r '.context_window.used_percentage // empty'); if [ -n \"$used\" ]; then printf \"%s | ctx: %.0f%% used\" \"$model\" \"$used\"; else printf \"%s\" \"$model\"; fi"
-  }
+    "command": "$HOME/.claude/statusline.sh"
+  },
+  "enabledPlugins": {
+    "mattpocock-skills@claude-plugins-official": true
+  },
+  "voice": {
+    "enabled": true,
+    "mode": "hold"
+  },
+  "theme": "dark-ansi",
+  "agentPushNotifEnabled": true,
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "Bash(nix flake check:*) and Bash(nix build:*) evaluated against flakes in /Users/lidongwei/workspace/dotfiles",
+      "Bash(brew list:*) and Bash(brew info:*) read-only Homebrew queries on this machine"
+    ],
+    "soft_deny": [
+      "$defaults",
+      "Bash(nix-collect-garbage:*) and Bash(nix store gc:*) — irreversible local store deletion",
+      "Bash(brew uninstall:*) and Bash(brew cleanup:*) — removes machine-wide packages outside this repo"
+    ],
+    "environment": [
+      "### Org-wide",
+      "**Organization**: None configured — personal setup (github.com/lidong-aesona, single-owner dotfiles repo)",
+      "**Cloud provider(s)**: None configured",
+      "**Repository visibility**: not queryable via gh here; README and CONTRIBUTING both state this repo is public — treat github.com/lidong-aesona/dotfiles as PUBLIC, so any push there is publishing",
+      "**Internal sharing / snippet hosting**: None configured — treat public paste/gist services as outside the trust boundary",
+      "**Secrets management**: None configured",
+      "**Default / protected branches**: default branch `main`; protection state not queryable via gh here — assume `main` may be protected and avoid force-push or history rewrite",
+      "**CI/CD deploy targets**: None configured — repo has .github/workflows (issue/PR automation for a personal dotfiles repo), no deploy target evidence",
+      "**Network posture**: None configured",
+      "**Source control**: The trusted repo and its remote(s) only (no additional orgs configured) — github.com/lidong-aesona/dotfiles, as scoped by the Trusted repo and Repository visibility entries above",
+      "**Trusted internal domains**: None configured — only github.com, api.github.com and raw.githubusercontent.com were contacted in this project",
+      "**Trusted cloud buckets**: None configured",
+      "**Key internal services**: None configured",
+      "**Internal package registry**: None configured — packages come from nixpkgs and Homebrew",
+      "**Sensitive data locations & audiences**: any file or store holding personal data, confidential business data, credentials, regulated data, or similarly sensitive material; preserve exact handles when known and share only with audiences cleared at the [named+specifics] bar. Note this is a personal dotfiles repo that is public: shell history, local config under ~ and any ignored-file contents must never be committed or pasted into it",
+      "**Data retention / declassification**: None configured",
+      "**Sensitive remote targets**: any namespace, host, or container whose name carries `prod` or `production` as a whole word or name segment (hyphen/underscore/dot-delimited — e.g. matches `prod-db`, not `producer`)",
+      "**Protected deployment namespaces / environments**: None configured — fall back to the Sensitive remote targets heuristic",
+      "**Protected IaC scopes**: IAM, RBAC, networking, quota, and node-pool resources; anything whose name or tag carries `prod` or `production` as a whole word or name segment",
+      "### User-specific",
+      "**Primary use of Claude Code**: software development — maintaining a personal macOS dotfiles repo managed with nix-darwin and home-manager",
+      "**Trusted repo**: /Users/lidongwei/workspace/dotfiles and its remote github.com/lidong-aesona/dotfiles. Because that remote is public, only that repo's own dotfiles work belongs there; content ported, repointed, or first read from outside this session's repo is not its own work, whoever directed the port. Visibility scopes confidential material only: secrets and sensitive data (personal & entrusted) are never cleared into any repo by its visibility (see Definitions)",
+      "**Org-specific CLIs**: None configured — routine local tooling observed is `nix` and `brew` (plus `pi`, `git` in shell history)",
+      "**Routine work**: nix-darwin / home-manager builds and switches inside this repo; no `<user>/` prefix conventions observed"
+    ]
+  },
+  "voiceEnabled": true,
+  "skipDangerousModePermissionPrompt": true
 }
