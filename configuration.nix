@@ -37,6 +37,9 @@
     brews = [
       "herdr"
       "pi-coding-agent"
+      # Homebrew, not nixpkgs: venvs pin the interpreter path, and Nix store paths change per update.
+      "python@3.12"
+      "python@3.14"
     ];
     casks = [
       "wezterm"

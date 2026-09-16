@@ -16,6 +16,10 @@ in
     jq        # json on the command line
     lazygit
     neovim
+    awscli2   # aws
+    gh        # github
+    shellcheck
+    actionlint
     # the font everything renders in
     nerd-fonts.hack
   ];
