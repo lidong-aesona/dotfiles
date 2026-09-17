@@ -1,0 +1,5 @@
+2026-09-16T19:05:59.161100Z  INFO herdr::logging: herdr starting event="app.startup" subsystem="client" outcome="started" pid=74806
+2026-09-16T19:05:59.161143Z  INFO herdr::client: connecting to server path=/var/folders/h1/zszskwj139zf1r2lvvxbypz40000gn/T/herdr-remote-74285-workbox-orchestrator.sock
+2026-09-16T19:05:59.518549Z  INFO herdr::client::handshake: endpoint handshake succeeded generation=1 server_version=0.9.0
+2026-09-16T19:06:22.070286Z  WARN herdr::raw_input: flushing lone escape after input timeout; if this follows an alt chord or focus switch it may reach the pane as plain esc bytes=[27]
+2026-09-16T19:06:24.056356Z  INFO herdr::logging: herdr exiting event="app.shutdown" subsystem="client" outcome="completed" pid=74806

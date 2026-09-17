@@ -44,6 +44,7 @@
     casks = [
       "wezterm"
       "claude-code"
+      "gcloud-cli"
     ];
   };
 }
