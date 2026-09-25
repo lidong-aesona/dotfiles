@@ -15,7 +15,7 @@
     "npm:pi-web-access@0.14.0",
     "npm:@ryan_nookpi/pi-extension-codex-fast-mode@0.2.6"
   ],
-  "lastChangelogVersion": "0.84.3",
+  "lastChangelogVersion": "0.85.1",
   "defaultProvider": "anthropic",
   "defaultModel": "claude-opus-4-8",
   "modelThinkingLevels": {

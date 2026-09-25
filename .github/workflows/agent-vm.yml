@@ -1,0 +1,33 @@
+name: Update agent VM
+
+# Owner PRs merge to main. Other people's PRs are closed by close-prs.yml.
+# This updates infrastructure only when that does not replace the instance,
+# then applies this repo's dotfiles on the live box over SSM.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: agent-vm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: CloudFormation and dotfiles
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::190944421460:role/dotfiles-agent-vm-deploy
+          aws-region: us-west-1
+          role-session-name: dotfiles-agent-vm
+      - name: Update stack and apply config
+        run: ./aws-agent-vm/deploy.sh --apply

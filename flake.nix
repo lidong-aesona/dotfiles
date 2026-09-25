@@ -12,9 +12,12 @@
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
 
     nix-homebrew.url = "github:zhaofengli/nix-homebrew";
+
+    # Linux agent VM. Kept separate from the darwin nixpkgs pin above.
+    nixpkgs-linux.url = "github:NixOS/nixpkgs/nixos-26.05";
   };
 
-  outputs = inputs@{ self, nix-darwin, nix-homebrew, home-manager, nixpkgs }:
+  outputs = inputs@{ self, nix-darwin, nix-homebrew, home-manager, nixpkgs, nixpkgs-linux }:
     let
       # The one username line to change if this isn't your machine.
       # bootstrap.sh offers to rewrite this for you if your macOS username differs.
@@ -34,6 +37,22 @@
             home-manager.users.${user} = import ./home.nix;
           }
         ];
+      };
+
+      # Amazon Linux agent VM. Username is the AMI default, not the Mac user above.
+      # bootstrap-linux.sh / rebuild.sh pick the attr from `uname -m`.
+      homeConfigurations = let
+        linuxHome = system: home-manager.lib.homeManagerConfiguration {
+          pkgs = import nixpkgs-linux {
+            inherit system;
+            config.allowUnfree = true;
+          };
+          extraSpecialArgs = { user = "ec2-user"; };
+          modules = [ ./home.nix ];
+        };
+      in {
+        agent-vm = linuxHome "x86_64-linux";
+        agent-vm-aarch64 = linuxHome "aarch64-linux";
       };
     };
 }
