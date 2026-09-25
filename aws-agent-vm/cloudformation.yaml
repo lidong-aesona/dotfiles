@@ -1,0 +1,431 @@
+# Do not put dotfiles bootstrap in UserData. A UserData change replaces the instance,
+# and the root volume is not reattached. Config updates go through SSM (deploy.sh).
+# LatestAmiId is a pinned AMI. The old SSM-latest parameter re-resolves on every
+# deploy and replaces the instance when Amazon publishes a new AL2023 image.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Persistent coding-agent VM (workbox). Amazon Linux 2023, SSH over Tailscale,
+  Herdr + agent CLIs. Base packages are user-data. Dotfiles are applied over SSM
+  after merge, not by replacing the instance. Per-user state (credentials, agent
+  sessions, work trees) is not in this template.
+
+Parameters:
+  SSHPublicKey:
+    Type: String
+    Description: Your laptop's public key (contents of ~/.ssh/workbox.pub)
+    AllowedPattern: "^ssh-(ed25519|rsa) .+"
+    ConstraintDescription: Must be a full public key line starting with ssh-ed25519 or ssh-rsa
+
+  AllowedCidr:
+    Type: String
+    Description: CIDR allowed to reach SSH/mosh over the public IP (x.x.x.x/32). Empty means no public SSH (Tailscale/SSM only).
+    Default: ""
+    AllowedPattern: "^((\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2})?$"
+
+  InstanceType:
+    Type: String
+    Default: m7i.2xlarge
+    AllowedValues:
+      - m7i.xlarge
+      - m7i.2xlarge
+      - m7i.4xlarge
+      - m7g.xlarge
+      - m7g.2xlarge
+
+  VolumeSizeGiB:
+    Type: Number
+    Default: 200
+    MinValue: 50
+    MaxValue: 1000
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for the security group (account default VPC is fine)
+
+  # Named explicitly rather than left to EC2's default-subnet pick: not every AZ
+  # offers every instance type. us-west-1 offers m7i only in 1a and 1c, so an
+  # unpinned launch can land in an AZ where the type does not exist.
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet to launch into. Must be in an AZ that offers InstanceType.
+
+  TailscaleAuthKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Reusable Tailscale auth key (tskey-auth-...). Leave empty to join by hand.
+
+  # Tailscale appends a suffix (agent-vm-1) if this name is already claimed by a
+  # live node, which silently breaks `Host workbox -> HostName agent-vm`.
+  # During a region cutover either remove the old node first or set this to a
+  # distinct name and rename once the old box is gone.
+  TailscaleHostname:
+    Type: String
+    Default: agent-vm
+    Description: Tailnet hostname (and system hostname) for this box.
+
+  # The box reaches the workload account by assuming its
+  # OrganizationAccountAccessRole. That grant lives on the instance role as an
+  # inline policy; it was added to the live role by hand and was missing from
+  # the original template, so a rebuild from that template lost member-account
+  # access silently.
+  WorkloadAccountId:
+    Type: String
+    Default: "997139436147"
+    AllowedPattern: "^[0-9]{12}$"
+    Description: Account whose OrganizationAccountAccessRole this box may assume.
+
+  # Pinned to the AMI the live instance booted. A new value replaces the instance.
+  # deploy.sh refuses that unless ALLOW_INSTANCE_REPLACEMENT=1.
+  LatestAmiId:
+    Type: String
+    Default: ami-0a0512cc1f10345ce
+    AllowedPattern: "^ami-[0-9a-f]+$"
+    Description: AMI for AgentInstance. Changing it replaces the instance and its root disk.
+
+  # Pinned because these are release-tagged binaries fetched from GitHub, so an
+  # unpinned rebuild would drift. The agent CLIs below are deliberately NOT
+  # pinned: they self-update, and pinning them to today's build ages badly.
+  ShellcheckVersion:
+    Type: String
+    Default: "0.11.0"
+  ActionlintVersion:
+    Type: String
+    Default: "1.7.12"
+  MoshVersion:
+    Type: String
+    Default: "1.4.0"
+  MoshSha256:
+    Type: String
+    Default: "872e4b134e5df29c8933dff12350785054d2fd2839b5ae6b5587b14db1465ddd"
+
+Conditions:
+  HasPublicSSH: !Not [!Equals [!Ref AllowedCidr, ""]]
+  UseGraviton: !Or
+    - !Equals [!Ref InstanceType, m7g.xlarge]
+    - !Equals [!Ref InstanceType, m7g.2xlarge]
+
+Resources:
+  AgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # IAM is a global namespace, so this name is shared across regions. While
+      # the old stack still exists the new one needs a different stack name.
+      RoleName: !Sub "${AWS::StackName}-instance"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: assume-workload-org-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AssumeWorkloadAccountAccessRole
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub "arn:aws:iam::${WorkloadAccountId}:role/OrganizationAccountAccessRole"
+
+  AgentInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AgentRole
+
+  AgentSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Tailscale always; SSH and mosh from your IP only when AllowedCidr is set
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Tailscale WireGuard port, so peers connect directly instead of relaying
+        # through DERP. Tailscale authenticates and encrypts this traffic itself.
+        - IpProtocol: udp
+          FromPort: 41641
+          ToPort: 41641
+          CidrIp: 0.0.0.0/0
+          Description: Tailscale direct connections
+        - !If
+          - HasPublicSSH
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: !Ref AllowedCidr
+            Description: SSH
+          - !Ref AWS::NoValue
+        # Only needed for mosh over the PUBLIC ip. Over Tailscale, mosh rides
+        # inside the WireGuard tunnel and needs no rule of its own.
+        - !If
+          - HasPublicSSH
+          - IpProtocol: udp
+            FromPort: 60000
+            ToPort: 61000
+            CidrIp: !Ref AllowedCidr
+            Description: mosh over public IP
+          - !Ref AWS::NoValue
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-sg"
+
+  AgentEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-eip"
+
+  AgentInstance:
+    Type: AWS::EC2::Instance
+    # Without this a failed UserData still reports CREATE_COMPLETE and you find
+    # out by sshing into a half-built box. 30 minutes covers dnf update,
+    # Development Tools and the mosh source build.
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT30M
+        Count: 1
+    Properties:
+      ImageId: !If
+        - UseGraviton
+        - "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}"
+        - !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref AgentInstanceProfile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref AgentSG
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref VolumeSizeGiB
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: false
+      DisableApiTermination: true
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euxo pipefail
+            exec > >(tee /var/log/agent-vm-bootstrap.log) 2>&1
+
+            STATUS=1
+            finish() {
+              /opt/aws/bin/cfn-signal -e "$STATUS" \
+                --stack "${AWS::StackName}" --resource AgentInstance --region "${AWS::Region}" || true
+            }
+            trap finish EXIT
+
+            # SSH access first, so a later package failure cannot lock us out.
+            install -d -m 700 -o ec2-user -g ec2-user /home/ec2-user/.ssh
+            echo "${SSHPublicKey}" >> /home/ec2-user/.ssh/authorized_keys
+            chown ec2-user:ec2-user /home/ec2-user/.ssh/authorized_keys
+            chmod 600 /home/ec2-user/.ssh/authorized_keys
+
+            dnf update -y
+            dnf groupinstall -y "Development Tools"
+
+            # AL2023 ships curl-minimal; installing full "curl" conflicts with it.
+            # Base set, then the tools added by hand on the us-west-2 box:
+            #   nodejs24/npm, python3.12+3.14, gh, ruby, nmap-ncat, htop
+            #   headless-browser libs (atk/at-spi2/mesa/libX*) for Playwright-style runs
+            #   protobuf/ncurses/openssl devel for the mosh build below
+            dnf install -y \
+              git jq unzip tar docker \
+              nodejs24 nodejs24-npm \
+              python3.12 python3.12-pip python3.14 python3.14-pip \
+              ruby nmap-ncat htop \
+              atk at-spi2-atk at-spi2-core libXcomposite libXdamage libXfixes \
+              libXrandr mesa-libgbm libxkbcommon alsa-lib \
+              protobuf-devel protobuf-compiler ncurses-devel openssl-devel
+
+            systemctl enable --now docker
+            usermod -aG docker ec2-user
+
+            # gh lives in its own repo on AL2023.
+            dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+            dnf install -y gh
+
+            # mosh is not packaged for AL2023. Built from source against the
+            # native deps above so it stays on Amazon's patch stream.
+            # Tarball is checked against a known sha256 before it is trusted.
+            cd /usr/local/src
+            curl -fsSL -o "mosh-${MoshVersion}.tar.gz" \
+              "https://github.com/mobile-shell/mosh/releases/download/mosh-${MoshVersion}/mosh-${MoshVersion}.tar.gz"
+            echo "${MoshSha256}  mosh-${MoshVersion}.tar.gz" | sha256sum -c -
+            tar xzf "mosh-${MoshVersion}.tar.gz"
+            cd "mosh-${MoshVersion}"
+            ./configure --prefix=/usr/local
+            make -j"$(nproc)"
+            make install
+
+            # Release binaries, pinned.
+            curl -fsSL -o /tmp/shellcheck.tar.xz \
+              "https://github.com/koalaman/shellcheck/releases/download/v${ShellcheckVersion}/shellcheck-v${ShellcheckVersion}.linux.x86_64.tar.xz"
+            tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+            install -m 755 "/tmp/shellcheck-v${ShellcheckVersion}/shellcheck" /usr/local/bin/shellcheck
+
+            curl -fsSL -o /tmp/actionlint.tar.gz \
+              "https://github.com/rhysd/actionlint/releases/download/v${ActionlintVersion}/actionlint_${ActionlintVersion}_linux_amd64.tar.gz"
+            tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+            install -m 755 /tmp/actionlint /usr/local/bin/actionlint
+
+            # Agent CLIs, as ec2-user. Unpinned on purpose - these self-update.
+            sudo -u ec2-user bash -lc 'curl -fsSL https://herdr.dev/install.sh | sh'
+            sudo -u ec2-user bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
+            sudo -u ec2-user bash -lc 'npm install -g --prefix ~/.local @earendil-works/pi-coding-agent'
+
+            # Google Cloud SDK into the home dir, matching the current box.
+            sudo -u ec2-user bash -lc '
+              curl -fsSL -o /tmp/gcloud.tar.gz https://dl.google.com/dl/cloudsdk/channels/rapid/google-cloud-sdk.tar.gz
+              tar -xzf /tmp/gcloud.tar.gz -C "$HOME"
+              "$HOME/google-cloud-sdk/install.sh" --quiet --path-update true
+            '
+
+            curl -fsSL https://tailscale.com/install.sh | sh
+            systemctl enable --now tailscaled
+            if [ -n "${TailscaleAuthKey}" ]; then
+              tailscale up --auth-key="${TailscaleAuthKey}" --ssh \
+                --hostname="${TailscaleHostname}" --accept-dns=true
+            fi
+
+            cat >/etc/profile.d/agent-path.sh <<'EOF'
+            export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+            EOF
+
+            hostnamectl set-hostname "${TailscaleHostname}"
+            STATUS=0
+          - SSHPublicKey: !Ref SSHPublicKey
+            TailscaleAuthKey: !Ref TailscaleAuthKey
+            TailscaleHostname: !Ref TailscaleHostname
+            ShellcheckVersion: !Ref ShellcheckVersion
+            ActionlintVersion: !Ref ActionlintVersion
+            MoshVersion: !Ref MoshVersion
+            MoshSha256: !Ref MoshSha256
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}"
+
+  AgentEIPAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt AgentEIP.AllocationId
+      InstanceId: !Ref AgentInstance
+
+  # Assumed by .github/workflows/agent-vm.yml on push to main. Not a login role.
+  GitHubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dotfiles-agent-vm-deploy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Immutable subject for lidong-aesona/dotfiles, main only.
+                token.actions.githubusercontent.com:sub: repo:lidong-aesona@319962206/dotfiles@1346871046:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy-agent-vm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudFormationThisStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ValidateTemplate
+                Resource:
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*"
+              - Sid: IamForThisStack
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListInstanceProfilesForRole
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:PassRole
+                  - iam:GetInstanceProfile
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-instance"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/dotfiles-agent-vm-deploy"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:instance-profile/${AWS::StackName}-*"
+              - Sid: Ec2ForThisStack
+                Effect: Allow
+                Action:
+                  - ec2:Describe*
+                  - ec2:CreateSecurityGroup
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:AllocateAddress
+                  - ec2:ReleaseAddress
+                  - ec2:AssociateAddress
+                  - ec2:DisassociateAddress
+                  - ec2:ModifyInstanceAttribute
+                  - ec2:RunInstances
+                  - ec2:TerminateInstances
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                Resource: "*"
+              - Sid: ApplyConfig
+                Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                  - ssm:DescribeInstanceInformation
+                  - ssm:CancelCommand
+                Resource: "*"
+              - Sid: ReadPublicAmis
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}::parameter/aws/service/ami-amazon-linux-latest/*"
+
+Outputs:
+  PublicIP:
+    Value: !Ref AgentEIP
+  InstanceId:
+    Value: !Ref AgentInstance
+  AvailabilityZone:
+    Value: !GetAtt AgentInstance.AvailabilityZone
+  SSHExample:
+    Value: !Sub "ssh -i ~/.ssh/workbox ec2-user@${AgentEIP}"
+  MoshExample:
+    Value: !Sub "mosh ${TailscaleHostname}"
+  DeployRoleArn:
+    Value: !GetAtt GitHubActionsRole.Arn

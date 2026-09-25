@@ -88,6 +88,35 @@ Edit the config files in place, then apply:
 That's it.
 No separate build-and-copy step.
 
+## Agent VM (Linux)
+
+The same `home.nix` also builds a standalone home-manager config for the Amazon Linux agent VM (`homeConfigurations.agent-vm`, or `agent-vm-aarch64` on Graviton).
+nix-darwin, Homebrew, and macOS defaults stay on the Mac.
+On the VM, `./rebuild.sh` runs `home-manager switch` instead.
+
+First time on the VM, after Nix can be installed with sudo:
+
+```sh
+git clone https://github.com/lidong-aesona/dotfiles.git ~/.dotfiles
+~/.dotfiles/bootstrap-linux.sh
+```
+
+Auth, sessions, and Claude `settings.json` stay on each machine.
+`settings.json` names trusted repo paths, so the VM keeps its own file; a switch only copies portable keys (status line, theme, model settings) into it.
+Pi `auth.json` is never linked.
+Skills are not in this public repo. From the Mac:
+
+```sh
+./sync-skills.sh
+```
+
+`SYNC_REMOTE` defaults to `agent-vm-w1`.
+Edit a linked file on either machine, commit, and merge to `main`.
+The agent-vm workflow resets `~/.dotfiles` on the VM to that commit and runs `./rebuild.sh`.
+It also updates CloudFormation, and refuses the update if the change set would replace the instance.
+See `aws-agent-vm/README.md`.
+Run `./rebuild.sh` locally only when you want the Mac to pick up a package-list change before that.
+
 ## Make it yours
 
 This repo is mine.
