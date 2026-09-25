@@ -352,10 +352,16 @@ Resources:
                   - cloudformation:DescribeStackResources
                   - cloudformation:GetTemplate
                   - cloudformation:GetTemplateSummary
-                  - cloudformation:ValidateTemplate
                 Resource:
                   - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
                   - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*"
+              # ValidateTemplate and GetTemplateSummary do not support a stack ARN.
+              - Sid: CloudFormationUnscopedRead
+                Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                Resource: "*"
               - Sid: IamForThisStack
                 Effect: Allow
                 Action:
