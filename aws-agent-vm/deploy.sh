@@ -85,7 +85,7 @@ done
 reason="$(aws cloudformation describe-change-set \
   --region "$REGION" --stack-name "$STACK" --change-set-name "$CHANGE_SET" \
   --query StatusReason --output text)"
-if [[ "$st" == FAILED && "$reason" == *"didn't contain changes"* ]]; then
+if [[ "$st" == FAILED && ( "$reason" == *"didn't contain changes"* || "$reason" == *"No updates are to be performed"* ) ]]; then
   echo "CloudFormation: no infrastructure changes"
 else
   if [[ "$st" != CREATE_COMPLETE ]]; then
