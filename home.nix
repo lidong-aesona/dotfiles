@@ -24,6 +24,7 @@ in
     lazygit
     neovim
     awscli2   # aws
+    terraform # unfree (BSL), so no binary cache: the first rebuild compiles it
     gh        # github
     shellcheck
     actionlint
