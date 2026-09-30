@@ -102,7 +102,7 @@ git clone https://github.com/lidong-aesona/dotfiles.git ~/.dotfiles
 ```
 
 Auth, sessions, and Claude `settings.json` stay on each machine.
-`settings.json` names trusted repo paths, so the VM keeps its own file; a switch only copies portable keys (status line, theme, model settings) into it.
+`settings.json` names trusted repo paths, so the VM keeps its own file; a switch merges portable keys (including the 300k auto-compact window) and shared SessionStart hooks into it, preserving local policy and other hooks.
 Pi `auth.json` is never linked.
 Skills are not in this public repo. From the Mac:
 
@@ -173,6 +173,31 @@ If you don't use it, just remove it from `brews` in your copy.
 The files under `home/` are the real files - editing them here is editing your live config, no rebuild needed to see the change in your editor.
 `home.nix` uses `mkOutOfStoreSymlink` to point paths like `~/.config/nvim` straight at `home/.config/nvim` in this repo, so the two never drift out of sync.
 You only run `./rebuild.sh` when you change something that isn't just a symlinked file, like a package list or a system default.
+
+## Claude context continuity
+
+Both machines load the shared agent rules through `home/.claude/CLAUDE.md`,
+which adds compaction instructions and session notes. `home.nix` installs that
+file and the Python standard-library hook in `home/.claude/hooks/session-notes.py`.
+Python 3 is already installed by the Mac Homebrew config and the VM base setup.
+
+The SessionStart hook exposes a separate notes path on startup, resume,
+compaction, clear, and fork. Notes live under `~/.claude/session-notes/<session-id>.md`
+(or `$CLAUDE_CONFIG_DIR/session-notes/`), outside checkouts and this public repo.
+Claude updates them at milestones; the hook restores saved notes and caps its
+context output at 9,000 characters. A clear starts fresh task notes. Notes and
+sessions stay on their machine; use an explicit handoff to transfer work.
+
+Apply new file links with `./rebuild.sh` on each machine. The normal merge-to-main
+workflow also applies the VM configuration. On Linux, `home/.claude/shared-settings.jq`
+merges shared SessionStart hooks without duplicating them on repeated switches
+or replacing other hooks, permissions, or machine-specific policy.
+
+Validate the hook and settings merge with:
+
+```sh
+python3 tests/claude-context.test.py
+```
 
 ## Pi configuration
 
