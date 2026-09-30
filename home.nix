@@ -96,12 +96,13 @@ in
       ".config/wezterm" = linked "home/.config/wezterm";
       ".config/nvim" = linked "home/.config/nvim";
       ".claude/statusline.sh" = linked "home/.claude/statusline.sh";
+      ".claude/hooks/session-notes.py" = linked "home/.claude/hooks/session-notes.py";
       ".pi/agent/themes" = linked "home/.pi/agent/themes";
       ".pi/agent/extensions" = linked "home/.pi/agent/extensions";
       ".pi/agent/models.json" = linked "home/.pi/agent/models.json";
       ".pi/agent/settings.json" = linked "home/.pi/agent/settings.json";
       ".agents/AGENTS.md" = linked "home/AGENTS.md";
-      ".claude/CLAUDE.md" = linked "home/AGENTS.md";
+      ".claude/CLAUDE.md" = linked "home/.claude/CLAUDE.md";
       ".codex/AGENTS.md" = linked "home/AGENTS.md";
       ".config/opencode/AGENTS.md" = linked "home/AGENTS.md";
       ".pi/agent/AGENTS.md" = linked "home/AGENTS.md";
@@ -116,7 +117,7 @@ in
   ];
 
   # Claude settings.json is not linked on Linux: it names trusted repo paths.
-  # Copy only the keys that are safe to share, and leave autoMode/permissions alone.
+  # Merge portable preferences and SessionStart hooks; preserve autoMode/permissions.
   home.activation.claudeSharedSettings = lib.mkIf (!darwin) (
     lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       f="$HOME/.claude/settings.json"
@@ -130,22 +131,8 @@ in
         exit 1
       fi
       tmp="$(mktemp)"
-      ${pkgs.jq}/bin/jq --slurpfile shared "$shared" '
-        . as $local
-        | $shared[0]
-        | {
-            statusLine,
-            enabledPlugins,
-            voice,
-            voiceEnabled,
-            skipDangerousModePermissionPrompt,
-            theme,
-            agentPushNotifEnabled,
-            modelSettings
-          }
-        | with_entries(select(.value != null))
-        | $local + .
-      ' "$f" > "$tmp"
+      ${pkgs.jq}/bin/jq --slurpfile shared "$shared" \
+        -f "${dotfiles}/home/.claude/shared-settings.jq" "$f" > "$tmp"
       mv "$tmp" "$f"
     ''
   );

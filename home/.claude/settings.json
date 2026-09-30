@@ -10,6 +10,7 @@
     "enabled": true,
     "mode": "hold"
   },
+  "skipDangerousModePermissionPrompt": true,
   "theme": "dark-ansi",
   "agentPushNotifEnabled": true,
   "autoMode": {
@@ -51,5 +52,19 @@
     ]
   },
   "voiceEnabled": true,
-  "skipDangerousModePermissionPrompt": true
+  "autoCompactWindow": 300000,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact|clear|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/session-notes.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
 }
