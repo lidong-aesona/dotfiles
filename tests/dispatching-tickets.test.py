@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the dispatching-tickets skill's routing and prompt scripts, and its Home Manager wiring."""
 
+import http.server
 import json
 import os
 from pathlib import Path
@@ -9,13 +10,16 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+import threading
+import tomllib
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "home/.agents/skills/dispatching-tickets"
 ROUTE = SKILL / "scripts/route.py"
 PROMPT = SKILL / "scripts/prompt.py"
+QUOTA = SKILL / "scripts/quota_read.py"
 NOW = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
 
 
@@ -158,6 +162,105 @@ class PromptTests(Estate):
 
     def test_review_and_preface_do_not_combine(self):
         self.assertIn("do not combine", self.refused(PROMPT, "42", "--review", "--preface", "x.md"))
+
+
+class QuotaReadTests(Estate):
+    """quota_read.py against a loopback stand-in for both providers' usage endpoints."""
+
+    def setUp(self):
+        super().setUp()
+        # Both windows reset relative to now, so pace never depends on today's date:
+        # anthropic is 3/7 through its week at 96% used, openai 5/7 through at 40%.
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        self.anthropic_reset = now + timedelta(days=4)
+        self.openai_reset = now + timedelta(days=2)
+        self.seen = []
+        self.bodies = {
+            "/anthropic": {"five_hour": {"utilization": 1.0}, "seven_day": {
+                "utilization": 96.0, "resets_at": self.anthropic_reset.isoformat()}},
+            "/openai": {"rate_limit": {"limit_reached": False, "primary_window": {
+                "used_percent": 40, "limit_window_seconds": 604800,
+                "reset_at": int(self.openai_reset.timestamp())}}},
+        }
+        test = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                test.seen.append((self.path, self.headers.get("Authorization"),
+                                  self.headers.get("chatgpt-account-id")))
+                body = test.bodies.get(self.path)
+                self.send_response(200 if body else 401)
+                self.end_headers()
+                self.wfile.write(json.dumps(body or {"error": "unauthorized"}).encode())
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}"
+        self.env.update(QUOTA_ANTHROPIC_URL=f"{base}/anthropic", QUOTA_OPENAI_URL=f"{base}/openai")
+
+        home = Path(self.env["HOME"])
+        future = int((datetime.now(timezone.utc).timestamp() + 3600) * 1000)
+        (home / ".claude").mkdir()
+        self.claude_login = home / ".claude/.credentials.json"
+        self.claude_login.write_text(json.dumps({"claudeAiOauth": {"accessToken": "claude-secret", "expiresAt": future}}))
+        (home / ".pi/agent").mkdir(parents=True)
+        (home / ".pi/agent/auth.json").write_text(json.dumps({
+            "openai-codex": {"access": "openai-secret", "accountId": "acct-1", "expires": future},
+            "xai": {"access": "xai-secret"}}))
+        shutil.copy(SKILL / "templates/quota.toml", self.estate / "quota.toml")
+
+    def read(self, ok=True, **env):
+        r = self.run_script(QUOTA, **env)
+        self.assertEqual(r.returncode, 0 if ok else 1, r.stderr)
+        for secret in ("claude-secret", "openai-secret", "xai-secret"):
+            self.assertNotIn(secret, r.stdout + r.stderr)
+        return json.loads(r.stdout)
+
+    def ledger(self):
+        return tomllib.loads((self.estate / "quota.toml").read_text())
+
+    def test_writes_both_readings_and_keeps_the_rest(self):
+        report = self.read()
+        self.assertEqual(report["xai"]["status"], "by hand")
+        q = self.ledger()
+        week = timedelta(days=7)
+        self.assertEqual((q["anthropic"]["used"], q["anthropic"]["period_start"]),
+                         (0.96, (self.anthropic_reset - week).strftime("%Y-%m-%dT%H:%MZ")))
+        self.assertEqual((q["openai"]["used"], q["openai"]["period_days"], q["openai"]["period_start"]),
+                         (0.4, 7.0, (self.openai_reset - week).strftime("%Y-%m-%dT%H:%MZ")))
+        self.assertEqual(q["xai"]["read_at"], "2026-01-01T00:00Z")
+        self.assertIn("# Quota ledger", (self.estate / "quota.toml").read_text())
+        self.assertIn(("/anthropic", "Bearer claude-secret", None), self.seen)
+        self.assertIn(("/openai", "Bearer openai-secret", "acct-1"), self.seen)
+
+    def test_fresh_readings_steer_routing(self):
+        self.read()
+        self.live()
+        chosen = self.route("implementation")
+        self.assertEqual(chosen["provider"], "openai")
+        self.assertIn("96% used", chosen["candidates"]["claude-sonnet"]["why"])
+
+    def test_a_failed_reader_leaves_its_reading_and_exits_nonzero(self):
+        del self.bodies["/openai"]
+        report = self.read(ok=False)
+        self.assertEqual(report["openai"]["status"], "unreadable")
+        self.assertIn("HTTP 401", report["openai"]["why"])
+        self.assertEqual(self.ledger()["openai"]["read_at"], "2026-01-01T00:00Z")
+        self.assertEqual(self.ledger()["anthropic"]["used"], 0.96)
+
+    def test_an_expired_login_is_reported_not_sent(self):
+        self.claude_login.write_text(json.dumps({"claudeAiOauth": {"accessToken": "claude-secret", "expiresAt": 1}}))
+        report = self.read(ok=False)
+        self.assertIn("expired", report["anthropic"]["why"])
+        self.assertNotIn("/anthropic", [path for path, *_ in self.seen])
+
+    def test_a_login_is_never_sent_to_another_host(self):
+        report = self.read(ok=False, QUOTA_OPENAI_URL="https://example.com/usage")
+        self.assertIn("refusing to send", report["openai"]["why"])
 
 
 class WiringTests(unittest.TestCase):
