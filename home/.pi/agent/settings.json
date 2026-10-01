@@ -14,7 +14,8 @@
   "packages": [
     "npm:pi-web-access@0.35.0",
     "npm:@ryan_nookpi/pi-extension-codex-fast-mode@0.2.6",
-    "npm:@narumitw/pi-statusline@0.50.2"
+    "npm:@narumitw/pi-statusline@0.50.2",
+    "npm:pi-subagents@0.74.0"
   ],
   "lastChangelogVersion": "0.85.1",
   "defaultProvider": "openai-codex",
