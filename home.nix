@@ -106,6 +106,9 @@ in
       ".codex/AGENTS.md" = linked "home/AGENTS.md";
       ".config/opencode/AGENTS.md" = linked "home/AGENTS.md";
       ".pi/agent/AGENTS.md" = linked "home/AGENTS.md";
+      # Skills written here, not installed from a registry. ~/.claude/skills and ~/.pi/agent/skills
+      # already point into ~/.agents/skills, so every harness reads the repo copy.
+      ".agents/skills/dispatching-tickets" = linked "home/.agents/skills/dispatching-tickets";
     }
     (lib.mkIf darwin {
       ".config/herdr" = linked "home/.config/herdr";

@@ -152,10 +152,10 @@ test_zero_coupling_and_state_file() {
 test_static_typescript_and_repo_wiring() {
   # Home Manager links the extensions directory as a whole, so the calm
   # subdirectory auto-loads without any new declaration.
-  grep -q 'home.file.".pi/agent/extensions".source =' "$ROOT/home.nix" \
-    || fail "home.nix no longer links ~/.pi/agent/extensions as a directory"
-  grep -q "mkOutOfStoreSymlink \"\${dotfiles}/home/.pi/agent/extensions\"" "$ROOT/home.nix" \
-    || fail "home.nix changed the Pi extensions link target"
+  grep -qF '".pi/agent/extensions" = linked "home/.pi/agent/extensions";' "$ROOT/home.nix" \
+    || fail "home.nix no longer links ~/.pi/agent/extensions as a directory to the repo"
+  grep -qF 'link = path: config.lib.file.mkOutOfStoreSymlink "${dotfiles}/${path}";' "$ROOT/home.nix" \
+    || fail "home.nix links are no longer out-of-store symlinks into the checkout"
   [ -f "$CALM_DIR/index.ts" ] || fail "calm extension entry point missing"
   [ -f "$CALM_DIR/LICENSE" ] || fail "calm license file missing"
 

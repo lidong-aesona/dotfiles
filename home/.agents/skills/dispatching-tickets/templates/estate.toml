@@ -1,0 +1,188 @@
+# The estate: everything one dispatch fleet runs against.
+#
+# This file and blocks/ are the single source of truth for how the fleet runs. The operator
+# re-reads them at the start of every tick. When the user changes how the fleet runs - a new
+# agent kind, a new rule, a newly measured fact - the change is written here first and acted
+# on second. Date the why in a comment beside it.
+
+# GitHub repository whose issues are the tickets. Dependencies are read from here.
+tracker = "OWNER/REPO"
+
+# Agent names are <agent_prefix><ticket number><profile suffix>. Give each estate its own
+# prefix when two estates share one herdr session, or their ticket numbers collide.
+agent_prefix = "ticket-"
+
+# Seconds between ticks.
+cadence_seconds = 1500
+
+[labels]
+# The frontier dispatches ONLY tickets carrying `dispatch`, and surfaces tickets carrying
+# `surface` to the human. Every other ticket on the frontier (needs-triage, unlabeled, both
+# labels) is held. Seed these from the tracker repo's docs/agents/triage-labels.md if it has one.
+dispatch = "ready-for-agent"
+surface = "ready-for-human"
+
+[prompt]
+# Files under blocks/, appended after tickets/<n>/head.md in this order in every dispatch.
+# Drop repo-boundary.md for a single-repository estate.
+blocks = ["estate.md", "repo-boundary.md", "closing-mandate.md"]
+# Files under blocks/, appended after tickets/<n>/review-head.md for a cross-family reviewer.
+review_blocks = ["estate.md", "review.md"]
+
+# One table per repository agents work in. The tracker's own repository is usually one.
+[[repos]]
+name = "REPO"                 # short name, used in reports
+path = "/ABSOLUTE/PATH/REPO"  # the primary checkout
+slug = "OWNER/REPO"
+base = "main"                 # branch new worktrees start from
+landed = ["main"]             # branches a finished branch may have been merged into (cleanup's ancestry fallback)
+keep = []                     # worktree directory names cleanup never retires (reference checkouts, long-lived branches)
+
+[agents]
+# The profile for any ticket when there is no [routing] table, and for tickets dispatched before
+# routing existed. With [routing], route.py picks the profile per ticket.
+active = "claude-opus"
+# Profiles the user has pre-approved as replacements, in order, when a FIXED type's profiles are
+# all exhausted. Empty means ask the user. Fungible types fall through their own lists first.
+fallback = []
+
+# One profile per (harness, model, effort). Every profile carries:
+#   kind        herdr agent kind
+#   provider    whose subscription it spends: "anthropic", "openai" or "xai". Reviews never run on
+#               the author's provider, and quota.toml is keyed by it.
+#   suffix      appended to the agent name; unique, and must not start with a digit
+#   timeout_ms  readiness wait for `herdr agent start`
+#   args        arguments after `--`. Multi-line text cannot be passed; pass files by absolute path.
+#   skill_flag  the flag that injects a skill file as system prompt; route.py appends it with the
+#               ticket type's skill
+#   blocks      extra blocks/ files for this profile only (how it reaches skills, substitutes)
+#   crashed     exact text a tail ends in when the provider dropped the turn: resume the same agent
+#   exhausted   exact text a tail ends in when the quota is gone: hand the ticket to another profile
+#   exhausted_until  set when exhausted, with the reset time the provider gave: "2026-09-22T00:00"
+# Record new crashed/exhausted markers verbatim the first time you meet one.
+
+[agents.profiles.claude-opus]
+kind = "claude"
+provider = "anthropic"
+suffix = "c"
+timeout_ms = 180000
+args = ["--model", "claude-opus-5-5", "--effort", "medium", "--permission-mode", "bypassPermissions"]
+skill_flag = "--append-system-prompt-file"
+blocks = []
+crashed = []
+exhausted = []
+exhausted_until = ""
+
+[agents.profiles.claude-opus-high]
+kind = "claude"
+provider = "anthropic"
+suffix = "ch"
+timeout_ms = 180000
+args = ["--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "bypassPermissions"]
+skill_flag = "--append-system-prompt-file"
+blocks = []
+crashed = []
+exhausted = []
+exhausted_until = ""
+
+[agents.profiles.claude-sonnet]
+kind = "claude"
+provider = "anthropic"
+suffix = "s"
+timeout_ms = 180000
+args = ["--model", "claude-sonnet-5-5", "--effort", "medium", "--permission-mode", "bypassPermissions"]
+skill_flag = "--append-system-prompt-file"
+blocks = []
+crashed = []
+exhausted = []
+exhausted_until = ""
+
+[agents.profiles.claude-fable]
+kind = "claude"
+provider = "anthropic"
+suffix = "f"
+timeout_ms = 180000
+args = ["--model", "claude-fable-5-1", "--effort", "high", "--permission-mode", "bypassPermissions"]
+skill_flag = "--append-system-prompt-file"
+blocks = []
+crashed = []
+exhausted = []
+exhausted_until = ""
+
+# GPT through pi on the ChatGPT subscription (openai-codex is pi's OAuth provider). A `codex`
+# kind profile works the same way once Codex CLI is installed where the agents run.
+[agents.profiles.gpt-sol]
+kind = "pi"
+provider = "openai"
+suffix = "o"
+timeout_ms = 120000
+args = ["--provider", "openai-codex", "--model", "gpt-6.1-sol", "--thinking", "medium"]
+skill_flag = "--append-system-prompt"
+blocks = []
+crashed = ["Error: fetch failed", "Error: terminated", "Retry failed after 3 attempts"]
+exhausted = []
+exhausted_until = ""
+
+[agents.profiles.gpt-astra]
+kind = "pi"
+provider = "openai"
+suffix = "a"
+timeout_ms = 120000
+args = ["--provider", "openai-codex", "--model", "gpt-6-astra", "--thinking", "high"]
+skill_flag = "--append-system-prompt"
+blocks = []
+crashed = ["Error: fetch failed", "Error: terminated", "Retry failed after 3 attempts"]
+exhausted = []
+exhausted_until = ""
+
+[agents.profiles.gpt-luna]
+kind = "pi"
+provider = "openai"
+suffix = "l"
+timeout_ms = 120000
+args = ["--provider", "openai-codex", "--model", "gpt-6-luna", "--thinking", "low"]
+skill_flag = "--append-system-prompt"
+blocks = []
+crashed = ["Error: fetch failed", "Error: terminated", "Retry failed after 3 attempts"]
+exhausted = []
+exhausted_until = ""
+
+# Grok through pi on the SuperGrok subscription (xai via OAuth, not an API key: check
+# `pi auth` before the first dispatch).
+[agents.profiles.grok]
+kind = "pi"
+provider = "xai"
+suffix = "g"
+timeout_ms = 120000
+args = ["--provider", "xai", "--model", "grok-4.7", "--thinking", "high"]
+skill_flag = "--append-system-prompt"
+blocks = []
+crashed = ["Error: fetch failed", "Error: terminated", "Retry failed after 3 attempts"]
+exhausted = []
+exhausted_until = ""
+
+[routing]
+# How each ticket runs: ROUTING.md explains the types and the choice. The operator classifies a
+# ticket into exactly one type when it writes head.md, then runs route.py for that type.
+#   skill     the skill file delivered as system prompt (~/.agents/skills/<skill>/SKILL.md)
+#   profiles  candidates, in preference order
+#   fungible  true: route.py picks the candidate whose provider is furthest behind its quota pace.
+#             false: the first candidate that is not exhausted.
+#   review    true: a review type; route.py drops candidates on the diff author's provider.
+# A reading older than this many hours counts as on pace.
+stale_hours = 12
+# Pace subtracted per live agent on a provider, so one tick's fungible tickets spread out.
+agent_weight = 0.05
+
+[routing.types]
+design         = { skill = "codebase-design", profiles = ["claude-opus-high"], fungible = false }
+spec-build     = { skill = "implement-spec", profiles = ["claude-opus"], fungible = false }
+security       = { skill = "implement", profiles = ["claude-fable", "claude-opus-high"], fungible = false }
+research       = { skill = "research", profiles = ["grok"], fungible = false }
+implementation = { skill = "implement", profiles = ["gpt-sol", "claude-sonnet", "grok"], fungible = true }
+debugging      = { skill = "diagnosing-bugs", profiles = ["gpt-astra", "claude-opus-high", "grok"], fungible = true }
+prototype      = { skill = "prototype", profiles = ["grok", "gpt-sol"], fungible = true }
+mechanical     = { skill = "implement", profiles = ["gpt-luna", "claude-sonnet"], fungible = true }
+human-steps    = { skill = "wizard", profiles = ["gpt-luna", "claude-sonnet", "grok"], fungible = true }
+review         = { skill = "code-review", profiles = ["grok", "gpt-astra", "claude-opus-high"], fungible = true, review = true }
+security-review = { skill = "code-review", profiles = ["gpt-astra", "claude-opus-high"], fungible = false, review = true }

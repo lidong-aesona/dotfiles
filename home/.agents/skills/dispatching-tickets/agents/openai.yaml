@@ -1,0 +1,5 @@
+interface:
+  display_name: "Dispatching Tickets"
+  short_description: "Run a ticket dispatch loop over an estate"
+policy:
+  allow_implicit_invocation: false
