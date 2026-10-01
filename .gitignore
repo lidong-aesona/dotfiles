@@ -17,3 +17,7 @@ result-*
 
 # no-mistakes local validation state - never commit in this public repo
 .no-mistakes/
+
+# Skill runtime noise: Python bytecode and hand-made backups beside a script
+/home/.agents/skills/**/__pycache__/
+/home/.agents/skills/**/*.bak-*
