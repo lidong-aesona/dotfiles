@@ -64,7 +64,7 @@ A crashed agent is resumed in place, never re-dispatched from scratch, and its w
 
 ## 3. Dispatch
 
-Refresh stale `quota.toml` readings first. Then each `dispatch` ticket, classified and routed per [ROUTING.md](ROUTING.md) and started per [DISPATCH.md](DISPATCH.md). Done when every new agent shows `working` with its prompt submitted, on the profile `route.py` chose.
+Refresh `quota.toml` first with `scripts/quota_read.py` ([ROUTING.md](ROUTING.md) section 3). Then each `dispatch` ticket, classified and routed per [ROUTING.md](ROUTING.md) and started per [DISPATCH.md](DISPATCH.md). Done when every new agent shows `working` with its prompt submitted, on the profile `route.py` chose.
 
 ## 4. Retire
 

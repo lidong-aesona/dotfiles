@@ -32,7 +32,7 @@ A nonzero exit is the answer for this ticket this tick: no candidate is left, or
 
 ## 3. Keep the ledger
 
-`<estate>/quota.toml` holds one reading per provider, and its header says how to read each one on this machine. Refresh every provider at the start of a tick when its reading is older than `routing.stale_hours`. A reading is only ever what the provider itself reports; a missing or stale one counts as on pace, so a guess never steers the fleet. Report a provider more than 0.25 behind pace at the end of the week's second-to-last day, so the owner can point more fungible work at it.
+`<estate>/quota.toml` holds one reading per provider. At the start of every tick run `python3 scripts/quota_read.py <estate>`: it reads the Claude and ChatGPT weekly windows from the providers' own usage endpoints, with the logins Claude Code and pi already hold here, and rewrites those readings. A nonzero exit names the provider it could not read and why (an expired login renews when a session of that harness opens); report it and route on. Grok has no reader, so its reading is taken by hand as the file's header says; when it is older than `routing.stale_hours`, report it so the owner can refresh it. A reading is only ever what the provider itself reports; a missing or stale one counts as on pace, so a guess never steers the fleet. Report a provider more than 0.25 behind pace at the end of the week's second-to-last day, so the owner can point more fungible work at it.
 
 ## 4. Review across providers
 

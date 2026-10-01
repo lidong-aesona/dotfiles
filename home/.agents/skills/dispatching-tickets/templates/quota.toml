@@ -1,16 +1,17 @@
 # Quota ledger: one table per provider, keyed as profiles' `provider`. route.py reads it to send
 # fungible tickets to the subscription furthest behind its pace.
 #
-# Write a reading only from what the provider itself reports, never an estimate. Refresh each
-# provider at least every routing.stale_hours; a stale or missing reading counts as on pace.
+# scripts/quota_read.py rewrites the providers it can read, from what each provider itself reports:
+# anthropic (Claude Code's login) and openai (pi's openai-codex login). Every other provider is read
+# by hand, never estimated, and refreshed at least every routing.stale_hours; a stale or missing
+# reading counts as on pace.
 #   period_start  any past start of the provider's quota period (its weekly reset), UTC
 #   period_days   length of that period
 #   used          fraction of the period's allowance used, 0.0 to 1.0
-#   read_at       when you read it, UTC
+#   read_at       when it was read, UTC
 #
-# <!-- ESTATE: how to read each provider's usage on this machine, verified once:
-#      anthropic: `/usage` in a Claude Code session; openai: the ChatGPT usage page or pi's
-#      status line; xai: the Grok usage page. Replace with the exact commands that work. -->
+# <!-- ESTATE: where to read each hand-read provider, e.g. xai: the usage page at grok.com for the
+#      SuperGrok account pi uses. -->
 
 [anthropic]
 period_start = "2026-09-28T00:00Z"
