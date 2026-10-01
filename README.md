@@ -238,7 +238,7 @@ Calm never changes prompts, tool execution, model context, session data, or orde
 
 Pi's package system declares three third-party sources in the linked global `settings.json`:
 
-- `npm:pi-web-access@0.14.0` - the exact public npm release for web access.
+- `npm:pi-web-access@0.35.0` - the exact public npm release for web access.
 - `npm:@ryan_nookpi/pi-extension-codex-fast-mode@0.2.6` - the exact public npm release from `ryan_nookpi`.
 - `npm:@narumitw/pi-statusline@0.50.2` - a Powerline footer with model, workspace,
   Git, context usage, and activity. Configure it with `/statusline`; preferences
