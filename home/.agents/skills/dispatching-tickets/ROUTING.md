@@ -10,7 +10,7 @@ Read the ticket and pick exactly one type from `routing.types`. Write it at the 
 |---|---|---|
 | `design` | an interface, module boundary, ADR or domain-language decision | `codebase-design`, `domain-modeling`, `grilling` |
 | `spec-build` | a whole spec to build on an integration branch | `implement-spec` |
-| `security` | code that handles keys, consent, the sandbox, IAM or private data | `implement`, `tdd` at every seam |
+| `security` | a change to a guard or grant: keys, consent, the sandbox, IAM, or where private data may flow. Showing or moving data inside an existing boundary is `implementation` | `implement`, `tdd` at every seam |
 | `research` | a question answered from primary sources, with no code change | `research` |
 | `implementation` | a specified feature, bugfix, refactor or test | `implement`, `tdd` |
 | `debugging` | a failure whose cause is unknown | `diagnosing-bugs`, then `implement` |
