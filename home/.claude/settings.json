@@ -52,7 +52,7 @@
     ]
   },
   "voiceEnabled": true,
-  "autoCompactWindow": 300000,
+  "autoCompactWindow": 150000,
   "hooks": {
     "SessionStart": [
       {

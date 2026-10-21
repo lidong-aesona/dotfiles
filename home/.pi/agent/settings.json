@@ -21,8 +21,8 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-6.1-sol",
   "modelThinkingLevels": {
-    "openai-codex/gpt-6.1-sol": "xhigh",
-    "xai/grok-4.7": "xhigh"
+    "openai-codex/gpt-6.1-sol": "medium",
+    "xai/grok-4.7": "medium"
   },
   "compaction": {
     "enabled": true,
