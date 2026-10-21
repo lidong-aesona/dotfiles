@@ -12,9 +12,13 @@ agent that the original dispatch below it still applies. A review assembles
 tickets/<n>/review-head.md + `prompt.review_blocks` + the profile's `blocks` instead: a
 reviewer gets the review brief, never the mandate to close the ticket.
 
+A build head must open with `Type: <type>` naming a type in `routing.types`: a handover
+routes from it, and a head without one re-routes by guesswork.
+
 Blocks are read fresh on every assembly, so a handover carries today's estate facts rather
 than the ones the original dispatch was written with.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -30,6 +34,14 @@ def part(path):
     text = path.read_text().strip()
     if "<!-- ESTATE" in text:
         sys.exit(f"!! {path} still holds an unanswered <!-- ESTATE --> placeholder")
+    return text
+
+
+def typed(path, text, types):
+    match = re.search(r"^Type: ([\w-]+)(?:\s|$)", "\n".join(text.splitlines()[:5]), re.M)
+    if not match or match[1] not in types:
+        sys.exit(f"!! {path} needs a `Type: <type>` line in its first five lines naming one of "
+                 f"{', '.join(types)}; refusing to assemble a prompt that routes by guesswork")
     return text
 
 
@@ -56,7 +68,8 @@ def main():
     names = shared + profile.get("blocks", [])
 
     head = ticket / ("review-head.md" if review else "head.md")
-    body = "\n\n".join([part(head)] + [part(root / "blocks" / b) for b in names])
+    first = part(head) if review else typed(head, part(head), cfg["routing"]["types"])
+    body = "\n\n".join([first] + [part(root / "blocks" / b) for b in names])
     out = ticket / ("review.prompt.md" if review else "prompt.md")
     if "--preface" in args:
         preface = Path(args[args.index("--preface") + 1]).expanduser()

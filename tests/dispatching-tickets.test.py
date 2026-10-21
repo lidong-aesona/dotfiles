@@ -37,7 +37,7 @@ class Estate(unittest.TestCase):
         shutil.copy(SKILL / "templates/estate.toml", self.estate / "estate.toml")
         for block in ("estate.md", "repo-boundary.md", "closing-mandate.md", "review.md"):
             (self.estate / "blocks" / block).write_text(f"{block} body\n")
-        (self.estate / "tickets/42/head.md").write_text("build head\n")
+        (self.estate / "tickets/42/head.md").write_text("Type: implementation\nbuild head\n")
         (self.estate / "tickets/42/review-head.md").write_text("review head\n")
         self.quota(anthropic=0.80, openai=0.40, xai=0.10)
 
@@ -148,7 +148,7 @@ class PromptTests(Estate):
     def test_build_prompt_uses_head_and_build_blocks(self):
         out = Path(self.run_script(PROMPT, "42", "--profile", "gpt-sol").stdout.strip())
         text = out.read_text()
-        self.assertTrue(text.startswith("build head"))
+        self.assertTrue(text.startswith("Type: implementation\nbuild head"))
         self.assertIn("closing-mandate.md body", text)
         self.assertNotIn("review.md body", text)
 
@@ -159,6 +159,16 @@ class PromptTests(Estate):
         self.assertTrue(text.startswith("review head"))
         self.assertIn("review.md body", text)
         self.assertNotIn("closing-mandate.md body", text)
+
+    def test_build_head_must_name_a_routing_type(self):
+        head = self.estate / "tickets/42/head.md"
+        for text in ("build head\n", "Type: spec\nbuild head\n", "a\nb\nc\nd\ne\nType: implementation\n"):
+            with self.subTest(text=text):
+                head.write_text(text)
+                self.assertIn("needs a `Type: <type>` line", self.refused(PROMPT, "42", "--profile", "gpt-sol"))
+        head.write_text("Type: implementation (UI build chain)\nbuild head\n")
+        self.run_script(PROMPT, "42", "--profile", "gpt-sol").check_returncode()
+        self.run_script(PROMPT, "42", "--review", "--profile", "gpt-astra").check_returncode()
 
     def test_review_and_preface_do_not_combine(self):
         self.assertIn("do not combine", self.refused(PROMPT, "42", "--review", "--preface", "x.md"))
