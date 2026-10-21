@@ -25,7 +25,21 @@
     "xai/grok-4.7": "xhigh"
   },
   "compaction": {
-    "enabled": true
+    "enabled": true,
+    "modelOverrides": {
+      "openai-codex/gpt-6.1-sol": {
+        "reserveTokens": 300000
+      },
+      "xai/grok-4.7": {
+        "reserveTokens": 300000
+      },
+      "openai-codex/gpt-6-astra": {
+        "reserveTokens": 72000
+      },
+      "openai-codex/gpt-6-luna": {
+        "reserveTokens": 72000
+      }
+    }
   },
   "enableSkillCommands": true
 }
