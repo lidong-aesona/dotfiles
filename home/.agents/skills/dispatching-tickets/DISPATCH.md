@@ -16,7 +16,7 @@ Classify the ticket and choose its profile per [ROUTING.md](ROUTING.md). The res
 
 `<estate>/tickets/<n>/head.md` carries what only this ticket needs; whatever applies to every ticket belongs in a block. Read the ticket, the closing comments of its blockers, and the neighbours it builds on, then write the delta the body does not already say well:
 
-- `Type: <type>` and `Profile: <profile> (<reason>)`, first, as ROUTING.md says.
+- `Type: <type>` and `Profile: <profile> (<reason>)`, first, as ROUTING.md says; `prompt.py` refuses a head without a known type.
 - `Work ticket #<n> in <tracker>: "<title>". Read it in full: gh issue view <n> --repo <tracker>`.
 - Where the agent is: repository, branch, base. For a spanning ticket, which part goes where, and one pull request per repository.
 - Any ordering rule in the ticket that overrides the order of its criteria.
