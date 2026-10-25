@@ -9,6 +9,24 @@ A handover also serves **escalation**: a ticket that needs a stronger profile, o
 
 Scripts are in `~/.agents/skills/dispatching-tickets/scripts/`.
 
+## Machine scope
+
+Use the frontier's `agent_machines` and `worktree_machines` to locate existing work. An ownership handoff never changes machine implicitly. For Mac tails run:
+
+```
+python3 ~/.agents/skills/dispatching-tickets/scripts/dispatch.py <estate> <n> --read <name>
+```
+
+It reads with `herdr --machine mac agent read` and reports a candidate crashed/exhausted/stopped/review classification with the tail. Inspect the text and live status: a marker in old scrollback is not a new failure. Unreadable tails refuse recovery. Measure Mac git state through `ssh -n herdr-mac` with a quoted `zsh -lic` command in the actual worktree.
+
+Deliver every Mac resume/handover via a copied file, not inline SSH text:
+
+```
+python3 ~/.agents/skills/dispatching-tickets/scripts/dispatch.py <estate> <n> --send <name> <local-prompt-file>
+```
+
+For swaps below scope every Herdr command with `--machine mac`, use remote paths and IDs, keep the `mac-<n>-codex` identity, and inject the configured remote skill path. Archive before closing the old tab. Replacement profile/model changes still require the estate routing decision; exhaustion never silently substitutes a VM worker. If the Mac is unreadable, leave it unknown/busy and follow MACHINES.md's connectivity fallback.
+
 ## Resume a crashed agent
 
 1. **Measure**, read-only, in each of the ticket's worktrees: `git status --short` and `git log --oneline origin/<base>..HEAD`. Read the ticket's comments since dispatch.
@@ -19,7 +37,7 @@ Scripts are in `~/.agents/skills/dispatching-tickets/scripts/`.
    - Run any long transfer or job detached, with a log, and poll it, so a dropped turn costs a poll rather than the job.
    - The head's traps that are easiest to get backwards, restated: this agent was interrupted mid-thought.
    - Your goal is still to close the ticket.
-3. **Submit**: `herdr agent prompt <name> "$(cat <estate>/tickets/<n>/resume-<k>.md)"`, then confirm from the tail that it is working.
+3. **Submit** locally with `herdr agent prompt <name> "$(cat <estate>/tickets/<n>/resume-<k>.md)"`, or use `dispatch.py --send` as above for the Mac, then confirm from the tail that it is working.
 
 An agent that crashes repeatedly is still resumed; the markers point at the provider, not the work. A resume refused for quota is exhaustion.
 
@@ -46,7 +64,7 @@ For an exhausted agent, an escalation, and an `orphaned` ticket whose agent is a
    - Changes already made outside git, with ids.
    - Approvals the user granted since the old agent stopped, each with its exact scope and the condition it rests on, and a stop instruction for when that condition proves false. Beyond those, the standing stop rules hold.
    - When the old agent left nothing: a fresh start on a clean branch.
-4. **Assemble**: `python3 ~/.agents/skills/dispatching-tickets/scripts/prompt.py <estate> <n> --preface tickets/<n>/handover.md --profile <profile>`. The handover is followed by the original dispatch, re-assembled from today's head and blocks and the new profile's blocks.
+4. **Assemble**: `python3 ~/.agents/skills/dispatching-tickets/scripts/prompt.py <estate> <n> --preface tickets/<n>/handover.md --profile <profile>`. For the Mac add `--machine mac`: this retains the shared Mac preamble and writes `mac-handover.prompt.md`. The handover is followed by the original dispatch, re-assembled from today's head and blocks and the new profile's blocks. `dispatch.py --send` also wraps any plain resume/handover file with that same machine preamble before copying it.
 5. **Swap the agent**, keeping exactly one agent in the worktree:
 
    ```

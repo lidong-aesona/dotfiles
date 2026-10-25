@@ -10,7 +10,7 @@ Every branch, in every repository, is `build/<n>-<slug>`. The number in the name
 
 ## 2. Route it
 
-Classify the ticket and choose its profile per [ROUTING.md](ROUTING.md). The rest of this file uses the profile `route.py` printed: its `kind`, `suffix` and `args`.
+Use the frontier decision: VM eligibility remains `[labels].dispatch = "fleet:w1"`, with its original label precedence. Mac work requires `fleet:mac` plus `[machines.mac].dispatch_requires` (currently `ready-for-agent`) and no `ready-for-human`; human-labelled Mac work surfaces for hand dispatch. Both fleet labels together hold. Take the machine from `frontier.py` and `[machine_labels]` in estate.toml. `fleet:mac` alone never authorizes an automatic agent. Local work chooses its profile per [ROUTING.md](ROUTING.md); Mac work uses `[machines.mac].profile`, currently pi, openai-codex, gpt-6.1-sol, medium. Write that profile in the head. The local commands below use the profile `route.py` printed: its `kind`, `suffix` and `args`.
 
 ## 3. Write the head
 
@@ -36,7 +36,19 @@ python3 ~/.agents/skills/dispatching-tickets/scripts/prompt.py <estate> <n> --pr
 
 Prints the path of `tickets/<n>/prompt.md`: the head, then the estate's blocks, then the profile's blocks. A refusal names the missing part; write that part.
 
-## 5. Create the worktree
+## Mac launch
+
+After writing the head, for a `machine = "mac"` dispatch row run:
+
+```
+python3 ~/.agents/skills/dispatching-tickets/scripts/dispatch.py <estate> <n> <repo-name> <slug>
+```
+
+This replaces steps 4-7 for Mac work: it calls the same prompt assembler with the machine profile, prepends the Mac offline-only and shared gate-lock instructions, fetches origin, creates from the fetched `origin/main` SHA, verifies HEAD, records ownership in the head, starts `mac-<n>-codex` with the configured implement skill file, copies `mac-prompt.md` to the Mac, then submits it there. Prompts never travel as long SSH command text. Read its tail and confirm working. No fresh launch over an existing agent or worktree, on either machine; recover instead. A failure after create leaves an orphan for the next tick, without resetting work.
+
+The helper launches the primary repository. Use the configured Mac repository paths, not the VM paths in shared blocks. Any additional repository worktree must carry the same ticket number and be recorded in the head; all-machine ownership and retirement guards cover those trees too. If the Mac cannot be read, follow MACHINES.md's fallback, not the local steps.
+
+## 5. Create the worktree (local)
 
 ```
 herdr worktree create --cwd <repo path> --branch build/<n>-<slug> --base origin/<base> \
@@ -49,7 +61,7 @@ It reports the workspace and pane it opened. A secondary repository's worktree i
 
 **Check the base after creating it.** On 2026-09-24, `--base main` branched from a stale local ref rather than the remote tip, in a primary worktree and in secondary worktrees of two repositories, so it is not about primary or secondary: herdr branches from the local base ref. Compare `git -C <worktree> rev-parse HEAD` with `origin/<base>`; on a mismatch, tell the agent to `git reset --hard origin/<base>` before it writes anything, or run `git -C <repo> fetch origin` and move the local base ref first.
 
-## 6. Start the agent
+## 6. Start the agent (local)
 
 From the profile `route.py` chose, with the `args` it printed, which already carry the type's skill file:
 
@@ -57,7 +69,7 @@ From the profile `route.py` chose, with the `args` it printed, which already car
 herdr agent start <agent_prefix><n><suffix> --kind <kind> --pane <pane> --timeout <timeout_ms> -- <args, one word each>
 ```
 
-## 7. Submit the prompt
+## 7. Submit the prompt (local)
 
 ```
 herdr agent prompt <name> "$(cat <estate>/tickets/<n>/prompt.md)"

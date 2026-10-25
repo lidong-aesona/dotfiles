@@ -20,17 +20,21 @@ Each ticket gets an `action`:
   dispatch  carries the dispatch label, has no agent and no worktree
   orphaned  carries the dispatch label and has no agent, but a worktree carries its number:
             an agent died, its tab closed, or a start failed. Its work is on disk.
-  hold      anything else (needs-triage, unlabeled, both labels at once)
+  unknown   routed to, or previously owned on, an unreadable machine: no action
+  hold      an explicit estate holds entry (overrides labels, agents and worktrees),
+            or anything else (needs-triage, unlabeled, both labels at once)
 
-Blocked tickets get an action only when agents already exist for them (leave or read).
+Blocked tickets get an action when held or when agents already exist for them.
 Tickets whose blockers cannot be read go to `unreadable` and get no action at all.
-Exit status is nonzero when the tracker, the agent list or a repository's worktrees cannot be read.
+Unreadable machines are reported separately and quarantine their routed/last-known owners.
+Exit status is nonzero for unreadable tracker/baseline or invalid estate state.
 """
 import json, os, re, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import estate as E
+import freeze as F
 
 HEADING = re.compile(r"^#{1,6}[ \t]*Blocked by[ \t]*:?[ \t]*$", re.I | re.M)
 NEXT_HEADING = re.compile(r"^#{1,6}[ \t]", re.M)
@@ -147,7 +151,24 @@ def label(ref, tracker):
     return n if slug == tracker else f"{slug}#{n}"
 
 
-def action(cfg, labels, mine, trees):
+def action(cfg, labels, mine, trees, number=None):
+    if E.machine_conflict(cfg, labels):
+        return 'hold'
+    machine = E.machine_for(cfg, labels)
+    if machine:
+        if number in cfg.get('holds', []):
+            return 'hold'
+        if mine:
+            return 'leave' if any(a.get('agent_status') == 'working' for a in mine) else 'read'
+        if cfg['labels']['surface'] in labels:
+            return 'surface'
+        required = cfg.get('machines', {}).get(machine, {}).get('dispatch_requires')
+        if not required or required not in labels:
+            return 'hold'
+        return 'orphaned' if trees else 'dispatch'
+    # The original VM decision path below is unchanged.
+    if number in cfg.get("holds", []):
+        return "hold"
     if mine:
         return "leave" if any(a.get("agent_status") == "working" for a in mine) else "read"
     dispatch, surface = cfg["labels"]["dispatch"], cfg["labels"]["surface"]
@@ -192,19 +213,34 @@ def main():
     cfg = E.load(sys.argv[1])
     record = "--record" in sys.argv[2:]
     try:
+        holds = cfg.get("holds", [])
+        if not isinstance(holds, list) or any(type(n) is not int or n <= 0 for n in holds):
+            raise E.Refused("holds must be a list of positive tracker issue numbers")
+        freeze = F.state(cfg)
         tracker = Tracker(cfg["tracker"])
-        listed = E.agents()
+        previous = E.baseline(cfg)
+        machine_errors = {}
+        listed, all_trees = E.inventory(cfg, errors=machine_errors)
+        unknown_ownership = E.unknown_ownership(cfg, machine_errors, listed, all_trees, previous)
+        unknown_numbers = {n for numbers in unknown_ownership.values() for n in numbers}
+        ownership = E.ownership_numbers(cfg, listed, all_trees)
+        for machine, numbers in unknown_ownership.items():
+            ownership[machine] = sorted(set(ownership[machine]) | set(numbers))
         trees = {}
-        for repo in cfg["repos"]:
-            for w in E.worktrees(repo):
-                n = E.ticket_of_worktree(w.get("branch"), w["path"])
-                if n is not None:
-                    trees.setdefault(n, []).append(w["path"])
+        for w in all_trees:
+            n = E.ticket_of_worktree(w.get("branch"), w["path"])
+            if n is not None:
+                trees.setdefault(n, []).append(w)
+        for item in tracker.open.values():
+            if not E.machine_conflict(cfg, item['labels']):
+                E.machine_for(cfg, item['labels'])
     except E.Refused as e:
         print(json.dumps({"error": str(e), "dispatch": "none this tick"}, indent=2))
         sys.exit(2)
 
-    out = {"frontier": [], "blocked": [], "unreadable": [], "agents": {}}
+    out = {"frontier": [], "blocked": [], "unreadable": [], "agents": {},
+           "holds": holds, "freeze": freeze, "machine_errors": machine_errors,
+           "unknown_ownership": unknown_ownership, "ownership": ownership}
     for n in sorted(k for k, v in tracker.open.items() if not v["pr"]):
         item = tracker.open[n]
         try:
@@ -213,32 +249,47 @@ def main():
             out["unreadable"].append({"number": n, "title": item["title"], "error": str(e)})
             continue
         mine = E.ticket_agents(cfg, listed, n)
+        conflict = E.machine_conflict(cfg, item['labels'])
         row = {
             "number": n,
             "title": item["title"],
             "labels": item["labels"],
             "agents": {a["name"]: a.get("agent_status") for a in sorted(mine, key=lambda a: a["name"])},
-            "worktrees": trees.get(n, []),
+            "machine": None if conflict else E.machine_for(cfg, item['labels']),
+            "agent_machines": {a['name']: a['machine'] for a in mine},
+            "worktrees": [w['path'] for w in trees.get(n, [])],
+            "worktree_machines": {w['path']: w['machine'] for w in trees.get(n, [])},
         }
+        unknown = not conflict and (row['machine'] in machine_errors or n in unknown_numbers)
         if open_blockers:
             row["open_blockers"] = [label(r, tracker.slug) for r in open_blockers]
-            if mine:
-                # A blocker added after dispatch does not stop a live agent, and its agent
-                # still crashes and finishes like any other.
-                row["action"] = action(cfg, item["labels"], mine, trees.get(n))
+            if mine or n in holds or unknown or conflict:
+                # Explicit holds override agent recovery too. Other blocked live agents
+                # still crash and finish like any other.
+                row["action"] = 'unknown' if unknown else action(cfg, item["labels"], mine, trees.get(n), n)
             out["blocked"].append(row)
         else:
             row["declared_blockers"] = [label(r, tracker.slug) for r in declared]
-            row["action"] = action(cfg, item["labels"], mine, trees.get(n))
+            row["action"] = 'unknown' if unknown else action(cfg, item["labels"], mine, trees.get(n), n)
             out["frontier"].append(row)
 
-    prefix = cfg["agent_prefix"]
-    out["agents"] = {a["name"]: a.get("agent_status") for a in listed if (a.get("name") or "").startswith(prefix)}
+    out["agents"] = {f"{a['machine'] or 'local'}:{a['name']}": a.get("agent_status")
+                     for a in listed if E.ticket_of_agent(cfg, a.get('name')) is not None}
 
     baseline = cfg["_root"] / "last-tick.json"
-    prev = json.loads(baseline.read_text()) if baseline.is_file() else None
-    out["changes"] = changes(prev, out)
-    print(json.dumps(out, indent=2))
+    out["changes"] = changes(previous, out)
+    shown = out
+    if "--brief" in sys.argv[2:]:
+        # Tickets nobody acts on this tick (hold, leave, blocked with no agent) and that did not
+        # change cost the tick model tokens for nothing; list their numbers only.
+        delta = out['changes'] or {'action_changed': {}, 'entered_frontier': []}
+        moved = {int(n) for n in delta["action_changed"]} | set(delta["entered_frontier"])
+        act = lambda row: row.get("action") not in (None, "hold", "leave") or row["number"] in moved
+        shown = dict(out)
+        for key in ("frontier", "blocked"):
+            shown[key] = [row for row in out[key] if act(row)]
+            shown["quiet_" + key] = sorted(row["number"] for row in out[key] if not act(row))
+    print(json.dumps(shown, indent=2))
     if record:
         tmp = baseline.with_suffix(".tmp")
         tmp.write_text(json.dumps({k: v for k, v in out.items() if k != "changes"}, indent=2))
