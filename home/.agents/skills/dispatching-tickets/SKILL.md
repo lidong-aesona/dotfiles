@@ -90,7 +90,7 @@ A session is finished when its **ticket is closed and its branch has landed**. T
 
 ## 5. Report
 
-Report from `changes`. For each closed ticket, read what its agent reported, from the `tickets/<n>/report-*` that retire archived, or from the tail of a tab it kept: the terminal summary carries findings the closing comment omits. Report what closed and what it found, what was dispatched (with type and profile), reviewed, resumed or migrated, what newly waits on the human, what is unreadable, and each provider's pace. When nothing changed and no freeze is active, report nothing. With an active freeze, report its repositories, paths, reason and release condition.
+Report from `changes`. For each closed ticket, read what its agent reported, from the `tickets/<n>/report-*` that retire archived, or from the tail of a tab it kept: the terminal summary carries findings the closing comment omits. Lead with **Your actions**: what waits on the owner, ranked by how much work each unblocks, each with its link, the exact step and what it unblocks. Then report what closed and what it found, what was dispatched (with type and profile), reviewed, resumed or migrated, what is unreadable, and each provider's pace. When nothing changed and no freeze is active, report nothing. The owner-chat session answers a status question in the same order: Your actions first, then one line per live session (owner, 2026-10-26). With an active freeze, report its repositories, paths, reason and release condition.
 
 ## 6. Finish the tick
 
