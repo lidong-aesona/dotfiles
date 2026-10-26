@@ -1,0 +1,582 @@
+"""Offline multi-machine regressions. No test may reach ssh or herdr."""
+import contextlib
+import io
+import json
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import pytest
+import estate as E
+import frontier
+import cleanup
+import dispatch as D
+
+
+@pytest.fixture(autouse=True)
+def no_external_processes(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError(f'unfaked external process: {args}')
+    monkeypatch.setattr(E.subprocess, 'run', forbidden)
+
+
+@pytest.fixture
+def cfg(tmp_path):
+    return dict(_root=tmp_path, tracker='a/b', agent_prefix='w1-ticket-', holds=[],
+                labels={'dispatch': 'fleet:w1', 'surface': 'ready-for-human'},
+                watcher={'machines': ['', 'mac']},
+                machines={'mac': {'ssh': 'herdr-mac', 'home': '/Users/test',
+                                  'agent_prefix': 'mac-', 'profile': 'sol',
+                                  'gate_lock': 'shared Mac gate lock',
+                                  'dispatch_requires': 'ready-for-agent',
+                                  'repos': {'app': '/Users/test/app'}}},
+                machine_labels={'fleet:mac': 'mac', 'fleet:w1': ''},
+                routing={'types': {'implementation': {}}},
+                repos=[dict(name='app', path='/vm/app', slug='a/b', base='main')],
+                agents={'active': 'sol', 'profiles': {'sol': {
+                    'kind': 'pi', 'suffix': 'o', 'args': ['--model', 'gpt-6.1-sol'],
+                    'crashed': ['Error: fetch failed'], 'exhausted': ['quota']}}})
+
+
+def snapshot(cfg, agents, trees, items=None, record=False):
+    tracker = Mock(slug='a/b', open=items or {7: dict(pr=False, title='Mac work', labels=['fleet:mac', 'ready-for-agent'])})
+    tracker.blockers.return_value = ([], [])
+    out = io.StringIO()
+    with patch.object(E, 'load', return_value=cfg), patch.object(frontier, 'Tracker', return_value=tracker), \
+         patch.object(E, 'agents', side_effect=agents), patch.object(E, 'worktrees', side_effect=trees), \
+         patch('sys.argv', ['frontier.py', str(cfg['_root'])] + (['--record'] if record else [])), contextlib.redirect_stdout(out):
+        try:
+            frontier.main()
+        except SystemExit:
+            pass
+    return json.loads(out.getvalue())
+
+
+@pytest.mark.parametrize('eligibility,expected', [([], 'hold'), (['needs-triage'], 'hold'),
+    (['ready-for-human'], 'surface'), (['ready-for-agent'], 'dispatch'),
+    (['ready-for-agent', 'ready-for-human'], 'surface')])
+def test_mac_requires_configured_label_and_human_always_surfaces(cfg, eligibility, expected):
+    for trees in ([], ['/tree']):
+        wanted = 'orphaned' if expected == 'dispatch' and trees else expected
+        assert frontier.action(cfg, ['fleet:mac', *eligibility], [], trees, 1323) == wanted
+
+
+def test_vm_action_is_identical_to_original_policy(cfg):
+    import itertools
+    def original(labels, mine, trees, number):
+        if number in cfg.get('holds', []):
+            return 'hold'
+        if mine:
+            return 'leave' if any(a.get('agent_status') == 'working' for a in mine) else 'read'
+        dispatch, surface = cfg['labels']['dispatch'], cfg['labels']['surface']
+        if dispatch in labels and surface in labels:
+            return 'hold'
+        if surface in labels:
+            return 'surface'
+        if dispatch in labels:
+            return 'orphaned' if trees else 'dispatch'
+        return 'hold'
+    cfg['holds'] = [8]
+    labels = ['fleet:w1', 'ready-for-agent', 'ready-for-human', 'needs-triage']
+    for bits in itertools.product([False, True], repeat=len(labels)):
+        selected = [label for label, include in zip(labels, bits) if include]
+        for agents in ([], [{'agent_status': 'working'}], [{'agent_status': 'idle'}]):
+            for trees in ([], ['/tree']):
+                for n in (7, 8):
+                    assert frontier.action(cfg, selected, agents, trees, n) == original(selected, agents, trees, n)
+    assert frontier.action(cfg, ['ready-for-agent'], [], [], 7) == 'hold'
+    assert frontier.action(cfg, ['fleet:w1'], [], [], 7) == 'dispatch'
+
+
+def test_dual_fleet_conflict_holds_without_refusing_whole_tick(cfg):
+    for agents in ([], [{'agent_status': 'working'}]):
+        assert frontier.action(cfg, ['fleet:w1', 'fleet:mac', 'ready-for-agent'], agents, [], 7) == 'hold'
+    result = snapshot(cfg, [[], []], [[], []], {7: dict(pr=False, title='conflict', labels=['fleet:w1', 'fleet:mac'])})
+    assert result['frontier'][0]['action'] == 'hold'
+    assert not result['machine_errors']
+
+
+def test_mac_required_label_is_configured_not_hardcoded(cfg):
+    cfg['machines']['mac']['dispatch_requires'] = 'mac-ready'
+    assert frontier.action(cfg, ['fleet:mac', 'ready-for-agent'], [], [], 7) == 'hold'
+    assert frontier.action(cfg, ['fleet:mac', 'mac-ready'], [], [], 7) == 'dispatch'
+    with patch.object(D, 'ticket_labels', return_value=['fleet:mac', 'mac-ready']):
+        assert D.target(cfg, 7) == 'mac'
+
+
+def test_estate_snapshot_preserves_vm_dispatch_and_original_owner_comment():
+    import tomllib
+    path = Path(__file__).resolve().parents[2] / 'estate.toml'
+    if not path.exists():
+        pytest.skip('runs only beside a live estate.toml snapshot')
+    text = path.read_text()
+    estate = tomllib.loads(text)
+    assert estate['labels']['dispatch'] == 'fleet:w1'
+    assert estate['machines']['mac']['dispatch_requires'] == 'ready-for-agent'
+    assert '# 2026-10-01 owner expanded dispatch: needs-triage AND ready-for-human tickets are eligible.\n' in text
+    assert '# The tick requires ready-for-agent for fleet:mac; human-labelled Mac work is dispatched by hand.' in text
+    assert 'Historical 2026-10-01 expansion is superseded' not in text
+
+
+def test_missing_mac_required_label_configuration_holds(cfg):
+    del cfg['machines']['mac']['dispatch_requires']
+    assert frontier.action(cfg, ['fleet:mac', 'ready-for-agent'], [], [], 7) == 'hold'
+    with patch.object(D, 'ticket_labels', return_value=['fleet:mac', 'ready-for-agent']), pytest.raises(E.Refused):
+        D.target(cfg, 7)
+
+
+def test_sleeping_mac_quarantines_history_but_vm_dispatch_proceeds(cfg):
+    previous = dict(frontier=[dict(number=8, machine='', agents={'mac-8-codex': 'idle'},
+        agent_machines={'mac-8-codex': 'mac'}, worktrees=[], worktree_machines={}),
+        dict(number=9, machine='', agents={}, agent_machines={}, worktrees=['/mac/9-work'],
+             worktree_machines={'/mac/9-work': 'mac'})], blocked=[], unreadable=[],
+                    agents={'mac:mac-11-codex': 'done'})
+    (cfg['_root'] / 'last-tick.json').write_text(json.dumps(previous))
+    items = {n: dict(pr=False, title=str(n), labels=['fleet:w1', 'ready-for-agent']) for n in (8, 9, 10, 11)}
+    items[7] = dict(pr=False, title='Mac', labels=['fleet:mac', 'ready-for-agent'])
+    for _ in range(2):  # recording a failed read must not erase prior remote ownership
+        result = snapshot(cfg, [[], E.Refused('sleeping')], [[]], items, record=True)
+        actions = {row['number']: row['action'] for row in result['frontier']}
+        assert actions == {7: 'unknown', 8: 'unknown', 9: 'unknown', 10: 'dispatch', 11: 'unknown'}
+        assert 'mac' in result['machine_errors']
+    result = snapshot(cfg, [[], []], [[], []], items, record=True)
+    assert all(row['action'] == 'dispatch' for row in result['frontier'])
+
+
+def test_sleeping_mac_does_not_stop_vm_retirement_or_erase_closed_owner_guard(cfg, capsys):
+    baseline = dict(frontier=[], blocked=[], unreadable=[], agents={},
+                    unknown_ownership={'mac': [8]})
+    (cfg['_root'] / 'last-tick.json').write_text(json.dumps(baseline))
+    local_tree = dict(tree(cfg, ''), branch='build/10-work', path='/vm/10-work')
+    guarded_tree = dict(tree(cfg, ''), branch='build/8-work', path='/vm/8-work', open_workspace_id='w8')
+    agent = dict(name='w1-ticket-10o', agent_status='done', machine='', tab_id='w1:t1')
+    guarded_agent = dict(name='w1-ticket-8o', agent_status='done', machine='', tab_id='w8:t1')
+    with patch.object(E, 'agents', side_effect=[[agent, guarded_agent], E.Refused('Mac sleeping'), [agent]]), \
+         patch.object(E, 'worktrees', return_value=[local_tree, guarded_tree]), \
+         patch.object(cleanup, 'retirable', return_value='merged'), patch.object(cleanup, 'APPLY', True), \
+         patch.object(cleanup, 'archive_tail', return_value=Path('/report')), \
+         patch.object(E, 'run', return_value=Mock(returncode=0)) as run:
+        closed, kept = cleanup.close_tabs(cfg, Mock(closed=Mock(return_value=True)))
+        assert len(closed) == len(kept) == 1
+        assert run.call_args.args[:3] == ('herdr', 'tab', 'close')
+    with patch.object(E, 'agents', side_effect=[[], E.Refused('Mac sleeping')]), \
+         patch.object(E, 'worktrees', return_value=[local_tree, guarded_tree]), \
+         patch.object(cleanup, 'retirable', return_value='merged'), patch.object(cleanup, 'APPLY', True), \
+         patch.object(E, 'run', return_value=Mock(returncode=0)) as run:
+        removed, kept = cleanup.remove_worktrees(cfg, Mock(closed=Mock(return_value=True)))
+        assert len(removed) == len(kept) == 1
+        assert run.call_count == 1 and '--machine' not in run.call_args.args
+    assert 'Mac sleeping' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('labels', [['fleet:mac'], ['fleet:mac', 'needs-triage'],
+                                  ['fleet:mac', 'ready-for-human'],
+                                  ['fleet:mac', 'ready-for-agent', 'ready-for-human']])
+def test_direct_mac_launch_also_requires_agent_eligibility(cfg, labels):
+    with patch.object(D, 'ticket_labels', return_value=labels), pytest.raises(E.Refused, match='eligible'):
+        D.target(cfg, 1323)
+
+
+def test_readable_baseline_records_closed_ticket_owners_before_later_outage(cfg):
+    items = {10: dict(pr=False, title='VM work', labels=['fleet:w1', 'ready-for-agent'])}
+    agents = [[], [{'name': 'w1-ticket-8o', 'agent_status': 'done', 'cwd': '/mac/8-work'},
+                   {'name': 'w2:p1', 'agent_status': 'done', 'cwd': '/mac/11-work'}]]
+    trees = [[], [{'path': '/mac/9-work', 'branch': 'build/9-work'}]]
+    snapshot(cfg, agents, trees, items, record=True)  # #8/#9 are closed, absent from tracker.open
+    items.update({n: dict(pr=False, title=str(n), labels=['fleet:w1', 'ready-for-agent']) for n in (8, 9, 11)})
+    result = snapshot(cfg, [[], E.Refused('sleeping')], [[]], items, record=True)
+    assert {r['number']: r['action'] for r in result['frontier']} == {8: 'unknown', 9: 'unknown', 10: 'dispatch', 11: 'unknown'}
+
+
+def test_explicit_machine_qualified_baseline_accepts_other_estate_prefix(cfg):
+    previous = {'agents': {'mac:w1-ticket-8o': 'done'}}
+    assert E.unknown_ownership(cfg, {'mac': 'sleeping'}, [], [], previous) == {'mac': [8]}
+
+
+def test_sleeping_mac_quarantines_mac_routed_local_leftovers(cfg):
+    local = dict(tree(cfg, ''), branch='build/7-work')
+    agent = dict(name='w1-ticket-7o', agent_status='done', machine='', tab_id='w1:t1')
+    tickets = Mock(closed=Mock(return_value=True), machine=Mock(return_value='mac'))
+    with patch.object(E, 'agents', side_effect=[[agent], E.Refused('sleeping')]), \
+         patch.object(E, 'worktrees', return_value=[local]), patch.object(cleanup, 'APPLY', True), \
+         patch.object(cleanup, 'retirable', return_value='merged'), patch.object(cleanup, 'archive_tail') as archive:
+        assert cleanup.close_tabs(cfg, tickets)[0] == []
+        archive.assert_not_called()
+    with patch.object(E, 'agents', side_effect=[[], E.Refused('sleeping')]), \
+         patch.object(E, 'worktrees', return_value=[local]), patch.object(cleanup, 'APPLY', True), \
+         patch.object(cleanup, 'retirable', return_value='merged'):
+        assert cleanup.remove_worktrees(cfg, tickets)[0] == []
+
+
+def test_remote_git_timeout_after_inventory_keeps_vm_retirement_running(cfg):
+    remote_tree = tree(cfg)
+    local_tree = dict(tree(cfg, ''), branch='build/10-work', path='/vm/10-work')
+    tickets = Mock(closed=Mock(return_value=True), machine=Mock(return_value=''))
+    def run(machine_cfg, machine, *args, **kwargs):
+        if machine:
+            raise E.Refused('Mac probe timed out')
+        return Mock(returncode=0, stdout='')
+    with patch.object(E, 'inventory', return_value=([], [remote_tree, local_tree])), \
+         patch.object(cleanup, 'APPLY', True), patch.object(E, 'machine_run', side_effect=run), \
+         patch.object(cleanup, 'landed', return_value='merged'), patch.object(E, 'run', return_value=Mock(returncode=0)):
+        removed, kept = cleanup.remove_worktrees(cfg, tickets)
+    assert len(removed) == len(kept) == 1
+    assert removed[0][0].startswith('local:')
+
+
+def test_cleanup_reads_and_caches_closed_ticket_machine_labels(cfg):
+    issue = {'state': 'CLOSED', 'labels': [{'name': 'fleet:mac'}]}
+    with patch.object(E, 'call', return_value=json.dumps(issue)) as call:
+        tickets = cleanup.Tickets('a/b')
+        assert tickets.closed(7) and tickets.machine(7, cfg) == 'mac'
+        assert call.call_count == 1
+        assert 'state,labels' in call.call_args.args
+    for raw in ('garbage', '{"state":"CLOSED"}', '{"state":"CLOSED","labels":[{}]}'):
+        with patch.object(E, 'call', return_value=raw):
+            assert not cleanup.Tickets('a/b').closed(7)
+
+
+@pytest.mark.parametrize('phase', ['archive', 'recheck', 'close'])
+def test_late_mac_terminal_failure_does_not_stop_vm_tab_retirement(cfg, phase):
+    remote = dict(name='mac-7-codex', agent_status='done', machine='mac', tab_id='w1:t1')
+    local = dict(name='w1-ticket-10o', agent_status='done', machine='', tab_id='w2:t1')
+    local_tree = dict(tree(cfg, ''), branch='build/10-work', path='/vm/10-work')
+    tickets = Mock(closed=Mock(return_value=True), machine=Mock(side_effect=lambda n, c: 'mac' if n == 7 else ''))
+    archive = [E.Refused('Mac tail timed out'), Path('/report')] if phase == 'archive' else [Path('/report')] * 2
+    recheck = ([local],) if phase == 'archive' else ([E.Refused('Mac status timed out'), [local]] if phase == 'recheck' else [[remote], [local]])
+    closes = [E.Refused('Mac close timed out'), Mock(returncode=0)] if phase == 'close' else [Mock(returncode=0)]
+    with patch.object(E, 'inventory', return_value=([remote, local], [tree(cfg), local_tree])), \
+         patch.object(cleanup, 'APPLY', True), patch.object(cleanup, 'retirable', return_value='merged'), \
+         patch.object(cleanup, 'archive_tail', side_effect=archive), patch.object(E, 'agents', side_effect=recheck), \
+         patch.object(E, 'run', side_effect=closes):
+        closed, kept = cleanup.close_tabs(cfg, tickets)
+    assert len(closed) == len(kept) == 1
+    assert closed[0][0] == 'w1-ticket-10o'
+
+
+def test_late_mac_failure_quarantines_historical_local_tree_while_other_vm_tree_retires(cfg):
+    (cfg['_root'] / 'last-tick.json').write_text(json.dumps({'ownership': {'mac': [8]}}))
+    guarded = dict(tree(cfg, ''), branch='build/8-work', path='/vm/8-work')
+    independent = dict(tree(cfg, ''), branch='build/10-work', path='/vm/10-work')
+    def run(machine_cfg, machine, *args, **kwargs):
+        if machine:
+            raise E.Refused('Mac timed out after inventory')
+        return Mock(returncode=0, stdout='')
+    with patch.object(E, 'inventory', return_value=([], [tree(cfg), guarded, independent])), \
+         patch.object(cleanup, 'APPLY', True), patch.object(E, 'machine_run', side_effect=run), \
+         patch.object(cleanup, 'landed', return_value='merged'), patch.object(E, 'run', return_value=Mock(returncode=0)):
+        removed, kept = cleanup.remove_worktrees(cfg, Mock(closed=Mock(return_value=True), machine=Mock(return_value='')))
+    assert len(removed) == 1 and len(kept) == 2
+    assert removed[0][0].endswith('/10-work')
+
+
+@pytest.mark.parametrize('phase', ['revision', 'ancestry'])
+def test_late_remote_branch_probe_failure_is_scoped(cfg, phase):
+    good = Mock(returncode=0, stdout='', stderr='')
+    revision = Mock(returncode=0, stdout='sha', stderr='')
+    failed = Mock(returncode=255, stdout='', stderr='SSH disconnected')
+    results = [good, good, failed] if phase == 'revision' else [good, good, revision, failed]
+    errors = {}
+    with patch.object(E, 'machine_run', side_effect=results), \
+         patch.object(E, 'run', return_value=Mock(returncode=0, stdout='')):
+        assert cleanup.retirable(cfg, tree(cfg), errors) is None
+    assert 'mac' in errors
+
+
+def test_remote_agent_prevents_duplicate_when_vm_empty(cfg):
+    result = snapshot(cfg, [[], [{'name': 'mac-7-codex', 'agent_status': 'working'}]], [[], []])
+    assert result['frontier'][0]['action'] == 'leave'
+    assert result['frontier'][0]['machine'] == 'mac'
+
+
+def test_remote_tree_is_orphan_not_dispatch(cfg):
+    result = snapshot(cfg, [[], []], [[], [{'path': '/mac/tree', 'branch': 'build/7-work'}]])
+    assert result['frontier'][0]['action'] == 'orphaned'
+
+
+def test_remote_failure_never_means_empty(cfg):
+    result = snapshot(cfg, [[], E.Refused('mac unreachable')], [[], []])
+    assert result['frontier'][0]['action'] == 'unknown'
+    assert 'mac' in result['machine_errors']
+
+
+def test_label_routes_from_config_and_conflict_refuses(cfg):
+    assert E.machine_for(cfg, ['fleet:mac']) == 'mac'
+    assert E.machine_for(cfg, ['fleet:w1']) == ''
+    with pytest.raises(E.Refused):
+        E.machine_for(cfg, ['fleet:w1', 'fleet:mac'])
+
+
+def test_malformed_remote_lists_refuse(cfg):
+    for value in (None, {}, 'empty', [None], [{'name': 'x'}],
+                  [{'agent_status': 'working'}], [{'name': None, 'agent_status': 'working'}],
+                  [{'name': '', 'agent_status': 'working'}]):
+        with patch.object(E, 'call', return_value=json.dumps({'result': {'agents': value}})):
+            with pytest.raises(E.Refused):
+                E.agents('mac')
+
+
+def test_unnamed_agent_requires_explicit_pane_and_tracks_numbered_cwd(cfg):
+    raw = {'result': {'agents': [{'pane_id': 'w2:p1', 'cwd': '/mac/aesonaOS-7', 'agent_status': 'working'}]}}
+    with patch.object(E, 'call', return_value=json.dumps(raw)):
+        listed = E.agents('mac')
+    assert listed[0]['name'] == 'w2:p1'
+    assert E.ticket_agents(cfg, listed, 7) == listed
+    assert E.agent_tickets(cfg, dict(name='mac-6-codex', cwd='/mac/aesonaOS-7')) == {6, 7}
+
+
+@pytest.mark.parametrize('path', ['/mac/build-7-work', '/mac/aesonaOS-7', '/mac/7-work'])
+def test_detached_worktree_directory_carries_ticket(path):
+    assert E.ticket_of_worktree(None, path) == 7
+
+
+def test_remote_commands_explicit_and_shell_quoted(cfg):
+    with patch.object(E, 'run', return_value=Mock(returncode=0, stdout='ok')) as run:
+        E.machine_call(cfg, 'mac', 'git', 'status', cwd="/a path/it's")
+    command = run.call_args.args
+    assert command[:3] == ('ssh', '-n', '-o')
+    assert 'herdr-mac' in command
+    assert 'zsh -lic' in command[-1]
+    with patch.object(E, 'call', return_value='{"result":{"agents":[]}}') as call:
+        assert E.agents('mac') == []
+        assert call.call_args.args[:3] == ('herdr', '--machine', 'mac')
+
+
+def tree(cfg, machine='mac'):
+    return dict(path='/mac/tree', branch='build/7-work', open_workspace_id='w1',
+                machine=machine, repo=E.machine_repos(cfg, machine)[0])
+
+
+def test_failed_or_malformed_worktree_read_refuses(cfg):
+    for raw in ('not json', '{"result":{"worktrees":null}}',
+                '{"result":{"worktrees":[{}]}}'):
+        with patch.object(E, 'call', return_value=raw), pytest.raises(E.Refused):
+            E.worktrees(E.machine_repos(cfg, 'mac')[0], 'mac')
+
+
+def test_vm_label_also_protected_by_remote_owner(cfg):
+    assert frontier.action(cfg, ['fleet:w1'], [{'name': 'mac-7-codex', 'agent_status': 'working'}], [], 7) == 'leave'
+    result = snapshot(cfg, [[], []], [[], E.Refused('worktrees unreadable')])
+    assert result['frontier'][0]['action'] == 'unknown'
+
+
+def test_file_delivery_copies_bytes_not_prompt_in_ssh(cfg):
+    path = cfg['_root'] / 'long.md'
+    text = "quotes ' \" $HOME\n" * 10000
+    path.write_text(text)
+    with patch.object(E, 'machine_call', return_value='') as remote, patch.object(E, 'call', return_value='') as call:
+        D.send_file(cfg, 'mac', 'mac-7-codex', path)
+    assert call.call_args.args[0] == 'scp'
+    delivered = path.with_name('long.mac-delivery.md')
+    assert str(delivered) in call.call_args.args
+    assert delivered.read_text().endswith(text)
+    assert 'Offline only' in delivered.read_text()
+    assert text not in repr(remote.call_args_list)
+    assert remote.call_args.args[2:4] == ('python3', '-c')
+    assert 'read_text' in remote.call_args.args[4]
+
+
+@pytest.mark.parametrize('tail,state', [('Error: fetch failed', 'crashed'), ('quota', 'exhausted'),
+                                      ('Question: continue?', 'stopped'), ('Ready for review: PR #1', 'ready-for-review')])
+def test_remote_recovery_tail_classification(cfg, tail, state):
+    with patch.object(E, 'call', return_value=tail) as call:
+        assert D.read_tail(cfg, 'mac', 'mac-7-codex')['classification'] == state
+    assert call.call_args.args[:3] == ('herdr', '--machine', 'mac')
+    with patch.object(E, 'call', return_value=''), pytest.raises(E.Refused):
+        D.read_tail(cfg, 'mac', 'mac-7-codex')
+
+
+def launch_fakes(cfg):
+    settings = cfg['machines']['mac']
+    settings.update(skill='/Users/test/.claude/skills/implement/SKILL.md', gate_lock='shared Mac gate lock')
+    cfg['prompt'] = {'blocks': ['estate.md']}
+    ticket = cfg['_root'] / 'tickets/7'
+    ticket.mkdir(parents=True)
+    (ticket / 'head.md').write_text('Type: implementation\nWork ticket #7.\n')
+    (cfg['_root'] / 'blocks').mkdir()
+    (cfg['_root'] / 'blocks/estate.md').write_text('Shared estate rules.')
+    tracker = Mock()
+    tracker.blockers.return_value = ([], [])
+    return tracker
+
+
+def test_handover_assembly_keeps_mac_safety_preamble(cfg):
+    launch_fakes(cfg)
+    handover = cfg['_root'] / 'tickets/7/handover.md'
+    handover.write_text('Measured existing changes. Preserve them.')
+    result = D.P.assemble(cfg, 7, ['--profile', 'sol', '--preface', str(handover), '--machine', 'mac'])
+    body = result.read_text()
+    assert 'Offline only' in body and 'shared Mac gate lock' in body
+    assert 'Measured existing changes' in body and 'Shared estate rules.' in body
+    assert 'preserve existing work on recovery' in body
+
+
+def test_launch_fetches_verifies_starts_and_delivers_assembled_prompt(cfg):
+    tracker = launch_fakes(cfg)
+    created = dict(tree(cfg), branch='build/7-work')
+    def remote(*args, **kwargs):
+        return 'a' * 40 if 'rev-parse' in args else ''
+    def call(*args, **kwargs):
+        if 'pane' in args:
+            return json.dumps({'result': {'panes': [{'pane_id': 'w1:p1'}]}})
+        return '{}'
+    with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=([], [])), \
+         patch.object(frontier, 'Tracker', return_value=tracker), patch.object(E, 'worktrees', return_value=[created]), \
+         patch.object(E, 'machine_call', side_effect=remote) as commands, patch.object(E, 'call', side_effect=call) as calls, \
+         patch.object(D, 'send_file') as send, patch.object(D, 'read_tail', return_value={'classification': 'stopped'}):
+        D.launch(cfg, 7, 'app', 'work')
+    prompt = send.call_args.args[-1].read_text()
+    assert 'mac-7-codex' in prompt and 'Offline only' in prompt and 'shared Mac gate lock' in prompt
+    assert 'Shared estate rules.' in prompt and 'Work ticket #7.' in prompt
+    assert commands.call_args_list[0].args[2:5] == ('git', 'fetch', 'origin')
+    create = next(c for c in calls.call_args_list if 'create' in c.args)
+    assert create.args[create.args.index('--base') + 1] == 'a' * 40
+    start = next(c for c in calls.call_args_list if 'start' in c.args)
+    assert '--append-system-prompt' in start.args and 'mac-7-codex' in start.args
+    assert '/Users/test/.claude/skills/implement/SKILL.md' in start.args
+    assert 'Machine: mac' in (cfg['_root'] / 'tickets/7/head.md').read_text()
+
+
+@pytest.mark.parametrize('owners', [([{'name': 'mac-7-codex'}], []), ([], [{'path': '/mac/tree', 'branch': 'build/7-work'}])])
+def test_launch_rechecks_all_machine_ownership(cfg, owners):
+    with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=owners), \
+         pytest.raises(E.Refused, match='already has'):
+        D.launch(cfg, 7, 'app', 'work')
+
+
+def test_launch_does_not_retry_or_start_after_create_failure(cfg):
+    tracker = launch_fakes(cfg)
+    with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=([], [])), \
+         patch.object(frontier, 'Tracker', return_value=tracker), patch.object(E, 'machine_call', return_value='a' * 40), \
+         patch.object(E, 'call', side_effect=E.Refused('lost create reply')) as call, pytest.raises(E.Refused):
+        D.launch(cfg, 7, 'app', 'work')
+    assert call.call_count == 1 and call.call_args.kwargs['tries'] == 1
+
+
+@pytest.mark.parametrize('state', ['working', 'blocked', 'unknown'])
+def test_cleanup_never_closes_live_mac_agent(cfg, state):
+    agent = dict(name='mac-7-codex', agent_status=state, machine='mac', workspace_id='w1', tab_id='w1:t1')
+    with patch.object(E, 'inventory', return_value=([agent], [tree(cfg)])), patch.object(cleanup, 'APPLY', True):
+        assert cleanup.close_tabs(cfg, Mock(closed=Mock(return_value=True)))[0] == []
+        assert cleanup.remove_worktrees(cfg, Mock(closed=Mock(return_value=True)))[0] == []
+
+
+@pytest.mark.parametrize('closed,landed', [(False, 'merged'), (True, None)])
+def test_cleanup_closed_and_landed_are_both_required(cfg, closed, landed):
+    agent = dict(name='mac-7-codex', agent_status='done', machine='mac', tab_id='w1:t1')
+    with patch.object(E, 'inventory', return_value=([agent], [tree(cfg)])), \
+         patch.object(cleanup, 'retirable', return_value=landed), patch.object(cleanup, 'APPLY', True):
+        assert cleanup.close_tabs(cfg, Mock(closed=Mock(return_value=closed)))[0] == []
+
+
+@pytest.mark.parametrize('closed_second,landed_second', [(False, True), (True, False)])
+def test_cleanup_preserves_agent_owning_another_open_or_unlanded_ticket(cfg, closed_second, landed_second):
+    agent = dict(name='mac-6-codex', cwd='/mac/aesonaOS-7', agent_status='done', machine='mac', tab_id='w1:t1')
+    first = dict(tree(cfg), branch='build/6-work', path='/mac/6-work')
+    tickets = Mock(closed=Mock(side_effect=lambda n: n == 6 or closed_second))
+    def landed(tree_cfg, worktree, errors=None):
+        return 'merged' if worktree['branch'] == 'build/6-work' or landed_second else None
+    with patch.object(E, 'inventory', return_value=([agent], [first, tree(cfg)])), \
+         patch.object(cleanup, 'retirable', side_effect=landed), patch.object(cleanup, 'APPLY', True), \
+         patch.object(cleanup, 'archive_tail') as archive:
+        assert cleanup.close_tabs(cfg, tickets)[0] == []
+        archive.assert_not_called()
+
+
+def test_cleanup_multi_ticket_archive_covers_every_owned_ticket(cfg):
+    agent = dict(name='mac-6-codex', cwd='/mac/aesonaOS-7', agent_status='done', machine='mac', tab_id='w1:t1')
+    first = dict(tree(cfg), branch='build/6-work', path='/mac/6-work')
+    tickets = Mock(closed=Mock(return_value=True))
+    with patch.object(E, 'inventory', return_value=([agent], [first, tree(cfg)])), \
+         patch.object(cleanup, 'retirable', return_value='merged'), patch.object(cleanup, 'APPLY', True), \
+         patch.object(cleanup, 'archive_tail', return_value=Path('/saved')) as archive, \
+         patch.object(E, 'agents', return_value=[agent]), patch.object(E, 'run', return_value=Mock(returncode=0)):
+        assert len(cleanup.close_tabs(cfg, tickets)[0]) == 1
+    assert [call.args[1] for call in archive.call_args_list] == [6, 7]
+
+
+def test_mac_archive_then_close_then_remove(cfg):
+    agent = dict(name='mac-7-codex', agent_status='done', machine='mac', tab_id='w1:t1')
+    tickets = Mock(closed=Mock(return_value=True))
+    events = []
+    def run(*args, **kwargs):
+        events.append(args)
+        if 'close' in args:
+            assert list((cfg['_root'] / 'tickets/7').glob('report-mac-7-codex.md'))
+        return Mock(returncode=0, stdout='stable tail')
+    with patch.object(E, 'inventory', side_effect=[([agent], [tree(cfg)]), ([], [tree(cfg)])]), \
+         patch.object(E, 'agents', return_value=[agent]), patch.object(cleanup, 'retirable', return_value='PR merged'), \
+         patch.object(cleanup, 'APPLY', True), patch.object(cleanup.time, 'sleep'), patch.object(E, 'run', side_effect=run):
+        assert len(cleanup.close_tabs(cfg, tickets)[0]) == 1
+        assert len(cleanup.remove_worktrees(cfg, tickets)[0]) == 1
+    close = next(e for e in events if 'close' in e)
+    remove = next(e for e in events if 'remove' in e)
+    assert close[:3] == remove[:3] == ('herdr', '--machine', 'mac')
+    assert '--workspace' in remove
+
+
+@pytest.mark.parametrize('failure', ['fetch', 'dirty', 'status'])
+def test_remote_git_checks_fail_closed(cfg, failure):
+    def run(*args, **kwargs):
+        if 'fetch' in args:
+            return Mock(returncode=int(failure == 'fetch'), stdout='')
+        return Mock(returncode=int(failure == 'status'), stdout=' M file' if failure == 'dirty' else '')
+    with patch.object(E, 'machine_run', side_effect=run), patch.object(cleanup, 'landed') as landed:
+        assert cleanup.retirable(cfg, tree(cfg)) is None
+        landed.assert_not_called()
+
+
+def test_unknown_remote_ownership_prevents_any_cleanup(cfg):
+    with patch.object(E, 'inventory', side_effect=E.Refused('mac unknown')), pytest.raises(E.Refused):
+        cleanup.close_tabs(cfg, Mock())
+
+
+def test_landed_squash_tip_and_ancestry_on_mac(cfg):
+    repo = E.machine_repos(cfg, 'mac')[0]
+    with patch.object(E, 'machine_run', return_value=Mock(returncode=0, stdout='sha\n')) as remote, \
+         patch.object(E, 'run', return_value=Mock(returncode=0, stdout='12 sha\n')):
+        assert cleanup.landed(repo, 'build/7-work', repo['path'], cfg, 'mac') == 'PR #12 merged'
+    assert remote.call_args.args[:3] == (cfg, 'mac', 'git')
+    with patch.object(E, 'machine_run', return_value=Mock(returncode=0, stdout='new-sha\n')), \
+         patch.object(E, 'run', return_value=Mock(returncode=0, stdout='12 old-sha\n')):
+        assert 'ancestor' in cleanup.landed(repo, 'build/7-work', repo['path'], cfg, 'mac')
+
+
+@pytest.mark.parametrize('labels,held', [(['fleet:w1'], False), (['fleet:mac'], True), (['fleet:w1', 'fleet:mac'], False)])
+def test_launch_routing_and_holds_are_checked_before_mutation(cfg, labels, held):
+    if held:
+        cfg['holds'] = [7]
+    with patch.object(D, 'ticket_labels', return_value=labels), pytest.raises(E.Refused):
+        D.launch(cfg, 7, 'app', 'work')
+
+
+def test_blocked_ticket_is_not_dispatched(cfg):
+    tracker = Mock()
+    tracker.blockers.return_value = ([], [('a/b', 8)])
+    with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=([], [])), \
+         patch.object(frontier, 'Tracker', return_value=tracker), pytest.raises(E.Refused, match='open blockers'):
+        D.launch(cfg, 7, 'app', 'work')
+
+
+def test_scp_failure_never_submits_prompt(cfg):
+    path = cfg['_root'] / 'prompt.md'
+    path.write_text('Resume measured work.')
+    with patch.object(E, 'machine_call', return_value='') as remote, \
+         patch.object(E, 'call', side_effect=E.Refused('copy failed')), pytest.raises(E.Refused):
+        D.send_file(cfg, 'mac', 'mac-7-codex', path)
+    assert remote.call_count == 1  # mkdir only, never prompt
+
+
+def test_wrong_created_head_never_starts_agent(cfg):
+    tracker = launch_fakes(cfg)
+    with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=([], [])), \
+         patch.object(frontier, 'Tracker', return_value=tracker), patch.object(E, 'worktrees', return_value=[tree(cfg)]), \
+         patch.object(E, 'machine_call', side_effect=['', 'expected', 'wrong']), patch.object(E, 'call', return_value='{}') as call, \
+         pytest.raises(E.Refused, match='not at fetched base'):
+        D.launch(cfg, 7, 'app', 'work')
+    assert call.call_count == 1
+
+
+def test_unstable_tail_never_closes(cfg):
+    with patch.object(E, 'run', side_effect=[Mock(returncode=0, stdout='one'), Mock(returncode=0, stdout='two')]), \
+         patch.object(cleanup.time, 'sleep'):
+        assert cleanup.archive_tail(cfg, 7, 'mac-7-codex', 'mac') is None

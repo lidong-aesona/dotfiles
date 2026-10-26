@@ -18,6 +18,7 @@ routes from it, and a head without one re-routes by guesswork.
 Blocks are read fresh on every assembly, so a handover carries today's estate facts rather
 than the ones the original dispatch was written with.
 """
+import json
 import re
 import sys
 from pathlib import Path
@@ -45,12 +46,21 @@ def typed(path, text, types):
     return text
 
 
-def main():
-    args = sys.argv[1:]
-    if len(args) < 2:
-        sys.exit(__doc__)
-    cfg = E.load(args[0])
-    n = int(args[1].lstrip("#"))
+def machine_preamble(cfg, n, machine):
+    settings = cfg['machines'][machine]
+    name = f"{settings['agent_prefix']}{n}-codex"
+    return (f"You are {name} on the owner's Mac, reporting to dispatcher w1-operator on VM w1.\n"
+            "Never merge or push to main. Read docs/agents/worker-brief.md first.\n"
+            "This Mac preamble overrides VM-specific paths, credentials and live permissions below.\n"
+            "Offline only: no AWS or other cloud calls, lease, START or relay. Stub cloud clients in tests.\n"
+            "Leave other workers' files alone. Keep owner data out of logs and screenshots.\n"
+            f"Checks: targeted tests and make walks under {settings['gate_lock']}.\n"
+            "Use private pytest --basetemp and -p no:cacheprovider.\n"
+            "For fresh work branch from fetched origin/main and verify HEAD; preserve existing work on recovery.\n"
+            f"Machine repository paths: {json.dumps(settings['repos'], sort_keys=True)}\n\n")
+
+
+def assemble(cfg, n, args=()):
     root, ticket = cfg["_root"], cfg["_root"] / "tickets" / str(n)
     name = args[args.index("--profile") + 1] if "--profile" in args else cfg["agents"]["active"]
     if name not in cfg["agents"]["profiles"]:
@@ -77,8 +87,19 @@ def main():
             preface = root / preface
         body = part(preface) + SEAM + body
         out = ticket / f"{preface.stem}.prompt.md"
+    if '--machine' in args:
+        machine = args[args.index('--machine') + 1]
+        body = machine_preamble(cfg, n, machine) + body
+        out = out.with_name(f'{machine}-{out.name}')
     out.write_text(body + "\n")
-    print(out)
+    return out
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) < 2:
+        sys.exit(__doc__)
+    print(assemble(E.load(args[0]), int(args[1].lstrip('#')), args[2:]))
 
 
 if __name__ == "__main__":
