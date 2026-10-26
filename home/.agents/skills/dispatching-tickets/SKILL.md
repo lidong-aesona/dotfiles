@@ -1,6 +1,6 @@
 ---
 name: dispatching-tickets
-description: Run one tick of a dependency-driven dispatch loop over an estate - compute the ticket frontier, give each ready ticket its own agent and worktree on the profile its type routes to, run cross-provider reviews, recover crashed agents, retire finished sessions, report what changed.
+description: Run one tick of a dependency-driven dispatch loop over an estate - compute the ticket frontier, give each ready ticket its own agent and worktree on the profile its type routes to, run the second reviews the estate calls for, recover crashed agents, retire finished sessions, report what changed.
 disable-model-invocation: true
 argument-hint: "An estate directory, or nothing to set one up"
 ---

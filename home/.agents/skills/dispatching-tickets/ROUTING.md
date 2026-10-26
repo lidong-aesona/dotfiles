@@ -34,11 +34,11 @@ A nonzero exit is the answer for this ticket this tick: no candidate is left, or
 
 `<estate>/quota.toml` holds one reading per provider. At the start of every tick run `python3 scripts/quota_read.py <estate>`: it reads the Claude and ChatGPT weekly windows from the providers' own usage endpoints, with the logins Claude Code and pi already hold here, and rewrites those readings. A nonzero exit names the provider it could not read and why (an expired login renews when a session of that harness opens); report it and route on. Grok has no reader, so its reading is taken by hand as the file's header says; when it is older than `routing.stale_hours`, report it so the owner can refresh it. A reading is only ever what the provider itself reports; a missing or stale one counts as on pace, so a guess never steers the fleet. Report a provider more than 0.25 behind pace at the end of the week's second-to-last day, so the owner can point more fungible work at it.
 
-## 4. Review across providers
+## 4. Second review on another provider
 
-`implementation`, `debugging`, `mechanical`, `spec-build` and `security` tickets merge only after a reviewer on another provider approves. The author reports `Ready for review: <PR>` and stops (the closing mandate tells it to). When a tail says so:
+The estate's `blocks/closing-mandate.md` decides which pull requests get a second reviewer; read it there, not here. By default the author's own review is the review, and a second reviewer on another provider runs only for a `security` or `design` ticket, or a diff touching the paths `blocks/review.md` lists. Docs-, tests- and evidence-only pull requests get no second reviewer, whatever the ticket's type: read the diff, and merge on green checks and the approvals the repository requires. Every author reports `Ready for review: <PR>` and stops. When a second review is due:
 
-1. **Route**: `route.py <estate> review --author <author's provider>`, or `security-review` for a `security` ticket or a diff touching the paths `blocks/review.md` lists.
+1. **Route**: `route.py <estate> security-review --author <author's provider>` for a `security` ticket or a security-path diff, or `review` for a `design` ticket.
 2. **Brief**: write `tickets/<n>/review-head.md`: the ticket, the PR link, the author's provider, and the verification the ticket names. Assemble it with `prompt.py <estate> <n> --review --profile <profile>`.
 3. **Start** the reviewer in a new tab of the ticket's workspace, named `<agent_prefix><n>r<suffix>`, and submit `tickets/<n>/review.prompt.md`. The reviewer only reads the worktree; the author stays its one writer.
 4. **Relay**: when the reviewer reports its verdict, tell the author to read the review on the PR. On changes requested, the author fixes and reports `Ready for re-review`; prompt the same reviewer to re-review. On approve, close the reviewer's tab and tell the author to merge.
