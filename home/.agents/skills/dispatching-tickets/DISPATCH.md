@@ -10,7 +10,7 @@ Every branch, in every repository, is `build/<key>-<slug>`. The key in the name 
 
 ## 2. Route it
 
-Use the frontier decision: VM eligibility remains `[labels].dispatch = "fleet:w1"`, with its original label precedence. Mac work requires `fleet:mac` plus `[machines.mac].dispatch_requires` (currently `ready-for-agent`) and no `ready-for-human`; human-labelled Mac work surfaces for hand dispatch. Both fleet labels together hold. Take the machine from `frontier.py` and `[machine_labels]` in estate.toml. `fleet:mac` alone never authorizes an automatic agent. Local work chooses its profile per [ROUTING.md](ROUTING.md); Mac work uses `[machines.mac].profile`, currently pi, openai-codex, gpt-6.1-sol, medium. Write that profile in the head. The local commands below use the profile `route.py` printed: its `kind`, `suffix` and `args`.
+Use the frontier decision: VM eligibility is `[labels].dispatch = "fleet:w1"`, with its original label precedence, plus `[labels].dispatch_requires` (currently `ready-for-agent`) for a fresh dispatch. Mac work requires `fleet:mac` plus `[machines.mac].dispatch_requires` (currently `ready-for-agent`) and no `ready-for-human`; human-labelled Mac work surfaces for hand dispatch. Both fleet labels together hold. Take the machine from `frontier.py` and `[machine_labels]` in estate.toml. `fleet:mac` alone never authorizes an automatic agent. Local work chooses its profile per [ROUTING.md](ROUTING.md); Mac work uses `[machines.mac].profile`, currently pi, openai-codex, gpt-6.1-sol, medium. Write that profile in the head. The local commands below use the profile `route.py` printed: its `kind`, `suffix` and `args`.
 
 ## 3. Write the head
 

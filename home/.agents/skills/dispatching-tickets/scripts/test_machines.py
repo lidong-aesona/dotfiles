@@ -87,6 +87,15 @@ def test_vm_action_is_identical_to_original_policy(cfg):
     assert frontier.action(cfg, ['fleet:w1'], [], [], 7) == 'dispatch'
 
 
+def test_vm_dispatch_requires_gates_fresh_dispatch_only(cfg):
+    cfg['labels']['dispatch_requires'] = 'ready-for-agent'
+    assert frontier.action(cfg, ['fleet:w1'], [], [], 7) == 'hold'
+    assert frontier.action(cfg, ['fleet:w1', 'ready-for-agent'], [], [], 7) == 'dispatch'
+    assert frontier.action(cfg, ['fleet:w1'], [], ['/wt/7'], 7) == 'orphaned'
+    assert frontier.action(cfg, ['fleet:w1'], [{'name': 'w1-ticket-7c', 'agent_status': 'idle'}], [], 7) == 'read'
+    assert frontier.action(cfg, ['fleet:w1', 'ready-for-human'], [], [], 7) == 'hold'
+
+
 def test_dual_fleet_conflict_holds_without_refusing_whole_tick(cfg):
     for agents in ([], [{'agent_status': 'working'}]):
         assert frontier.action(cfg, ['fleet:w1', 'fleet:mac', 'ready-for-agent'], agents, [], 7) == 'hold'

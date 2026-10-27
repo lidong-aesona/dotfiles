@@ -191,7 +191,12 @@ def action(cfg, labels, mine, trees, number=None):
         return "surface"
     if dispatch in labels:
         # A fresh dispatch beside an existing worktree abandons whatever is in it.
-        return "orphaned" if trees else "dispatch"
+        if trees:
+            return "orphaned"
+        # Optional approval gate: a breakdown files sub-tickets with the dispatch label and its
+        # reviewer adds this one on approve. Recovery of started work (orphaned) is not gated.
+        required = cfg["labels"].get("dispatch_requires")
+        return "hold" if required and required not in labels else "dispatch"
     return "hold"
 
 
