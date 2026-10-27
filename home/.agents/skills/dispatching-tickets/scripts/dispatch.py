@@ -19,7 +19,8 @@ import prompt as P
 
 
 def ticket_labels(cfg, n):
-    labels = E.parse(E.call('gh', 'issue', 'view', str(n), '--repo', cfg['tracker'],
+    slug, number = E.locate(cfg, n)
+    labels = E.parse(E.call('gh', 'issue', 'view', str(number), '--repo', slug,
                             '--json', 'state,labels'))
     if labels.get('state') != 'OPEN':
         raise E.Refused(f'#{n} is not open')
@@ -106,11 +107,12 @@ def launch(cfg, n, repo_name, slug):
     machine = target(cfg, n)
     listed, trees, _ = ticket_inventory(cfg, n, machine)  # local AND remote owners
     if E.ticket_agents(cfg, listed, n) or any(
-            E.ticket_of_worktree(w.get('branch'), w['path']) == n for w in trees):
+            E.ticket_of_worktree(cfg, w.get('branch'), w['path']) == n for w in trees):
         raise E.Refused(f'#{n} already has an agent or worktree; recover, do not dispatch')
     # Recheck dependencies immediately before launch, not from a stale recorded frontier.
     from frontier import Tracker
-    if Tracker(cfg['tracker']).blockers(n)[1]:
+    tracker, number = E.locate(cfg, n)
+    if Tracker(tracker).blockers(number)[1]:
         raise E.Refused(f'#{n} has open blockers')
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]*', slug):
         raise E.Refused('slug must be lowercase letters, numbers and hyphens')
@@ -154,7 +156,8 @@ def launch(cfg, n, repo_name, slug):
 
 
 def main():
-    cfg, n = E.load(sys.argv[1]), int(sys.argv[2])
+    cfg = E.load(sys.argv[1])
+    n = E.parse_key(cfg, sys.argv[2])
     try:
         if sys.argv[3] in ('--read', '--send'):
             name = sys.argv[4]

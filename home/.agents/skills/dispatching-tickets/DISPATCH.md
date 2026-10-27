@@ -6,7 +6,7 @@ One ticket, one agent, one worktree per repository, one branch name, one profile
 
 With more than one repository, read `blocks/repo-boundary.md` and decide yourself which repository each part of the ticket belongs in. **The ticket is not the authority on placement**: tickets are written in the tracker's repository and name its paths, even for work that belongs elsewhere. The agent starts in the repository holding most of the work; a ticket spanning repositories gets a worktree in each.
 
-Every branch, in every repository, is `build/<n>-<slug>`. The number in the name is what protects a secondary worktree, which has no agent in it, from cleanup.
+Every branch, in every repository, is `build/<key>-<slug>`. The key in the name is what protects a secondary worktree, which has no agent in it, from cleanup. A main-tracker ticket's key is its number (`build/1511-x`); a ticket on a tracker listed in estate `[[trackers]]` is keyed by that tracker's prefix and number (`build/r235-x` for `aesona/research#235`). The same key names the agent (`<agent_prefix><key><suffix>`), the herdr worktree directory and `tickets/<key>/`, and is what `dispatch.py` and `prompt.py` take. Never name a prefixed ticket by its bare number: the numbers collide across trackers, and cleanup would read the session as the other tracker's ticket.
 
 ## 2. Route it
 
@@ -17,7 +17,7 @@ Use the frontier decision: VM eligibility remains `[labels].dispatch = "fleet:w1
 `<estate>/tickets/<n>/head.md` carries what only this ticket needs; whatever applies to every ticket belongs in a block. Read the ticket, the closing comments of its blockers, and the neighbours it builds on, then write the delta the body does not already say well:
 
 - `Type: <type>` and `Profile: <profile> (<reason>)`, first, as ROUTING.md says; `prompt.py` refuses a head without a known type.
-- `Work ticket #<n> in <tracker>: "<title>". Read it in full: gh issue view <n> --repo <tracker>`.
+- `Work ticket #<n> in <tracker>: "<title>". Read it in full: gh issue view <n> --repo <tracker>`, with the issue's own tracker and number (for key `r235`, `aesona/research` and `235`).
 - Where the agent is: repository, branch, base. For a spanning ticket, which part goes where, and one pull request per repository.
 - Any ordering rule in the ticket that overrides the order of its criteria.
 - The context behind the ticket: the decision or revert that created it, and what landed on neighbouring tickets, with where that evidence lives.
@@ -51,8 +51,8 @@ The helper launches the primary repository. Use the configured Mac repository pa
 ## 5. Create the worktree (local)
 
 ```
-herdr worktree create --cwd <repo path> --branch build/<n>-<slug> --base origin/<base> \
-  --label "<n> <short title>" --no-focus --trust-repository
+herdr worktree create --cwd <repo path> --branch build/<key>-<slug> --base origin/<base> \
+  --label "<key> <short title>" --no-focus --trust-repository
 ```
 
 It reports the workspace and pane it opened. A secondary repository's worktree is created the same way, with no agent.

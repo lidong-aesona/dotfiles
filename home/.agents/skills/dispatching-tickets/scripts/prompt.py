@@ -99,7 +99,8 @@ def main():
     args = sys.argv[1:]
     if len(args) < 2:
         sys.exit(__doc__)
-    print(assemble(E.load(args[0]), int(args[1].lstrip('#')), args[2:]))
+    cfg = E.load(args[0])
+    print(assemble(cfg, E.parse_key(cfg, args[1]), args[2:]))
 
 
 if __name__ == "__main__":

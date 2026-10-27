@@ -43,8 +43,57 @@ def load(estate_dir):
                 sys.exit(f"!! profile {name!r} is routed but has no `provider`")
         if not t.get("profiles"):
             sys.exit(f"!! routing.types.{tname} lists no profiles")
+    seen = {cfg["tracker"]: ""}
+    for t in cfg.get("trackers", []):
+        # A prefix keeps another tracker's #235 apart from this tracker's #235 in agent
+        # names, branches, worktree directories and tickets/<key>/. Letters only: the
+        # character before the number must say which tracker owns it.
+        if not isinstance(t.get("slug"), str) or not re.fullmatch(r"[a-z]+", t.get("prefix") or ""):
+            sys.exit(f"!! every [[trackers]] entry needs a slug and a lowercase-letter prefix in {path}")
+        if t["slug"] in seen or t["prefix"] in seen.values():
+            sys.exit(f"!! two trackers share a slug or prefix in {path}")
+        seen[t["slug"]] = t["prefix"]
     cfg["_root"] = root
     return cfg
+
+
+def trackers(cfg):
+    """(slug, prefix) for every tracked repository; the main tracker's prefix is empty."""
+    return [(cfg["tracker"], "")] + [(t["slug"], t["prefix"]) for t in cfg.get("trackers", [])]
+
+
+def key_for(cfg, slug, n):
+    """A ticket's estate key: the bare number on the main tracker, `<prefix><n>` elsewhere."""
+    return _keyed(dict(trackers(cfg))[slug], n)
+
+
+def locate(cfg, key):
+    """The (slug, number) a key names. Raises on a key no tracker owns."""
+    m = re.fullmatch(r"([a-z]*)(\d+)", str(key))
+    prefixes = {p: s for s, p in trackers(cfg)}
+    if not m or m[1] not in prefixes or int(m[2]) <= 0:
+        raise Refused(f"{key!r} names no tracked issue")
+    return prefixes[m[1]], int(m[2])
+
+
+def parse_key(cfg, text):
+    """A key typed on a command line (`#1254`, `1254`, `r235`) in its canonical form."""
+    return key_for(cfg, *locate(cfg, str(text).lstrip("#")))
+
+
+def order(key):
+    """Sort keys of mixed trackers: main tracker numbers first, then by prefix and number."""
+    m = re.fullmatch(r"([a-z]*)(\d+)", str(key))
+    return (m[1], int(m[2])) if m else ("~", 0)
+
+
+def _keyed(prefix, n):
+    return f"{prefix}{n}" if prefix else int(n)
+
+
+def prefix_pattern(cfg):
+    # Longest first, so the empty main prefix is the last alternative tried.
+    return "|".join(sorted((re.escape(p) for _, p in trackers(cfg)), key=len, reverse=True))
 
 
 def run(*args, cwd=None):
@@ -175,10 +224,10 @@ def ownership_numbers(cfg, listed, trees):
     for a in listed:
         owned[a['machine']].update(agent_tickets(cfg, a))
     for w in trees:
-        n = ticket_of_worktree(w.get('branch'), w['path'])
+        n = ticket_of_worktree(cfg, w.get('branch'), w['path'])
         if n is not None:
             owned[w['machine']].add(n)
-    return {machine: sorted(numbers) for machine, numbers in owned.items()}
+    return {machine: sorted(numbers, key=order) for machine, numbers in owned.items()}
 
 
 def unknown_ownership(cfg, errors, listed, trees, previous):
@@ -199,7 +248,7 @@ def unknown_ownership(cfg, errors, listed, trees, previous):
                 unknown[machine].add(n)
         unknown[machine].update(n for a in listed if a['machine'] == machine for n in agent_tickets(cfg, a))
         unknown[machine].update(n for w in trees if w['machine'] == machine
-                                if (n := ticket_of_worktree(w.get('branch'), w['path'])) is not None)
+                                if (n := ticket_of_worktree(cfg, w.get('branch'), w['path'])) is not None)
         for key in ('frontier', 'blocked'):
             for row in previous.get(key, []):
                 owned = machine in row.get('agent_machines', {}).values() or machine in row.get('worktree_machines', {}).values()
@@ -207,7 +256,7 @@ def unknown_ownership(cfg, errors, listed, trees, previous):
                 owned |= bool(prefix and any(name.startswith(prefix) for name in row.get('agents', {})))
                 if owned:
                     unknown[machine].add(row['number'])
-    return {machine: sorted(numbers) for machine, numbers in unknown.items()}
+    return {machine: sorted(numbers, key=order) for machine, numbers in unknown.items()}
 
 
 def agents(machine=""):
@@ -242,26 +291,33 @@ def ticket_agents(cfg, listed, n):
 def agent_tickets(cfg, agent):
     """Name and cwd can carry different tickets during stacked-work handoffs."""
     return {n for n in (ticket_of_agent(cfg, agent.get('name')),
-                        ticket_of_worktree(None, agent.get('cwd') or '')) if n is not None}
+                        ticket_of_worktree(cfg, None, agent.get('cwd') or '')) if n is not None}
 
 
 def ticket_of_agent(cfg, name):
+    """The key in `<agent prefix><key>`: `w1-ticket-110c` is 110, `w1-ticket-r235` is r235."""
     for prefix in [cfg['agent_prefix'], *[m['agent_prefix'] for m in cfg.get('machines', {}).values()]]:
-        m = re.match(rf"^{re.escape(prefix)}(\d+)", name or "")
+        m = re.match(rf"^{re.escape(prefix)}({prefix_pattern(cfg)})(\d+)", name or "")
         if m:
-            return int(m.group(1))
+            return _keyed(m.group(1), m.group(2))
     return None
 
 
-def ticket_of_worktree(branch, path):
-    """The ticket number from the branch (`build/107-three-stores`), else the directory
-    (`130-no-standing-admin`). Older branches carry the number only in the directory, and
-    both must resolve or that half of the tree is invisible to the loop."""
-    m = re.match(r"^[\w.-]+/(\d+)-", branch or "")
-    if m:
-        return int(m.group(1))
-    m = re.match(r"^(?:build-|[\w.]+-)?(\d+)(?:-|$)", Path(path).name)
-    return int(m.group(1)) if m else None
+def ticket_of_worktree(cfg, branch, path):
+    """The ticket key from the branch (`build/107-three-stores`, `build/r235-setup`), else the
+    directory (`130-no-standing-admin`). Older branches carry the number only in the directory,
+    and both must resolve or that half of the tree is invisible to the loop. A prefixed key counts
+    only in the names dispatch creates (`build/` branch, herdr's `build-` directory): an
+    unrelated `r899-af181e83` worktree is not research ticket 899."""
+    prefixed = prefix_pattern(cfg)
+    for pattern, text in ((rf"^build/({prefixed})(\d+)-", branch),
+                          (r"^[\w.-]+/()(\d+)-", branch),
+                          (rf"^build-({prefixed})(\d+)(?:-|$)", Path(path).name),
+                          (r"^(?:[\w.]+-)?()(\d+)(?:-|$)", Path(path).name)):
+        m = re.match(pattern, text or "")
+        if m:
+            return _keyed(m.group(1), m.group(2))
+    return None
 
 
 def worktrees(repo, machine=""):

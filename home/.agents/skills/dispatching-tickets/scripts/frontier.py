@@ -106,6 +106,9 @@ def declared_in_body(body, tracker):
 class Tracker:
     def __init__(self, slug):
         self.slug = slug
+        # The estate's other trackers, read this same tick: their open lists answer for
+        # their issues, so a cross-tracker blocker reads the state the frontier rows do.
+        self.peers = {}
         self.open = {}
         # The full paginated list of open issues AND pull requests. A `--limit` would
         # silently truncate, and a blocker past the limit would read as closed.
@@ -119,6 +122,8 @@ class Tracker:
     def is_open(self, ref):
         slug, n = ref
         if slug == self.slug and n in self.open:
+            return True
+        if slug in self.peers and n in self.peers[slug].open:
             return True
         # Absent from the open list is not proof of closed: `#1234` typed for `#123` names
         # an issue that does not exist, and that must not unblock anything. Ask, and let a
@@ -146,9 +151,17 @@ class Tracker:
         return sorted(refs), sorted(r for r in refs if self.is_open(r))
 
 
-def label(ref, tracker):
+def is_key(cfg, n):
+    """True for a canonical estate key: a positive main-tracker int or a configured prefix key."""
+    try:
+        return type(n) in (int, str) and E.parse_key(cfg, n) == n
+    except E.Refused:
+        return False
+
+
+def label(cfg, ref, tracker):
     slug, n = ref
-    return n if slug == tracker else f"{slug}#{n}"
+    return E.key_for(cfg, slug, n) if slug == tracker else f"{slug}#{n}"
 
 
 def action(cfg, labels, mine, trees, number=None):
@@ -193,13 +206,13 @@ def changes(prev, cur):
     unread_after = {u["number"] for u in cur["unreadable"]}
     front_before = {r["number"] for r in prev["frontier"]}
     return {
-        "closed": sorted((set(before) | unread_before) - set(after) - unread_after),
-        "entered_frontier": sorted(r["number"] for r in cur["frontier"] if r["number"] not in front_before),
+        "closed": sorted((set(before) | unread_before) - set(after) - unread_after, key=E.order),
+        "entered_frontier": sorted((r["number"] for r in cur["frontier"] if r["number"] not in front_before), key=E.order),
         "action_changed": {
             n: [before[n].get("action"), r["action"]]
             for n, r in after.items() if "action" in r and "action" in before.get(n, {}) and before[n]["action"] != r["action"]
         },
-        "newly_unreadable": sorted(unread_after - unread_before),
+        "newly_unreadable": sorted(unread_after - unread_before, key=E.order),
         "agents_changed": {
             name: [prev["agents"].get(name), status]
             for name, status in cur["agents"].items() if prev["agents"].get(name) != status
@@ -214,10 +227,13 @@ def main():
     record = "--record" in sys.argv[2:]
     try:
         holds = cfg.get("holds", [])
-        if not isinstance(holds, list) or any(type(n) is not int or n <= 0 for n in holds):
-            raise E.Refused("holds must be a list of positive tracker issue numbers")
+        if not isinstance(holds, list) or not all(is_key(cfg, n) for n in holds):
+            raise E.Refused("holds must list main-tracker issue numbers or prefixed keys such as \"r235\"")
         freeze = F.state(cfg)
-        tracker = Tracker(cfg["tracker"])
+        trackers = [Tracker(slug) for slug, _ in E.trackers(cfg)]
+        for t in trackers:
+            t.peers = {p.slug: p for p in trackers if p is not t}
+        items = {E.key_for(cfg, t.slug, n): (t, n, item) for t in trackers for n, item in t.open.items()}
         previous = E.baseline(cfg)
         machine_errors = {}
         listed, all_trees = E.inventory(cfg, errors=machine_errors)
@@ -228,10 +244,10 @@ def main():
             ownership[machine] = sorted(set(ownership[machine]) | set(numbers))
         trees = {}
         for w in all_trees:
-            n = E.ticket_of_worktree(w.get("branch"), w["path"])
+            n = E.ticket_of_worktree(cfg, w.get("branch"), w["path"])
             if n is not None:
                 trees.setdefault(n, []).append(w)
-        for item in tracker.open.values():
+        for _, _, item in items.values():
             if not E.machine_conflict(cfg, item['labels']):
                 E.machine_for(cfg, item['labels'])
     except E.Refused as e:
@@ -241,10 +257,10 @@ def main():
     out = {"frontier": [], "blocked": [], "unreadable": [], "agents": {},
            "holds": holds, "freeze": freeze, "machine_errors": machine_errors,
            "unknown_ownership": unknown_ownership, "ownership": ownership}
-    for n in sorted(k for k, v in tracker.open.items() if not v["pr"]):
-        item = tracker.open[n]
+    for n in sorted((k for k, (_, _, v) in items.items() if not v["pr"]), key=E.order):
+        tracker, number, item = items[n]
         try:
-            declared, open_blockers = tracker.blockers(n)
+            declared, open_blockers = tracker.blockers(number)
         except E.Refused as e:
             out["unreadable"].append({"number": n, "title": item["title"], "error": str(e)})
             continue
@@ -262,14 +278,14 @@ def main():
         }
         unknown = not conflict and (row['machine'] in machine_errors or n in unknown_numbers)
         if open_blockers:
-            row["open_blockers"] = [label(r, tracker.slug) for r in open_blockers]
+            row["open_blockers"] = [label(cfg, r, tracker.slug) for r in open_blockers]
             if mine or n in holds or unknown or conflict:
                 # Explicit holds override agent recovery too. Other blocked live agents
                 # still crash and finish like any other.
                 row["action"] = 'unknown' if unknown else action(cfg, item["labels"], mine, trees.get(n), n)
             out["blocked"].append(row)
         else:
-            row["declared_blockers"] = [label(r, tracker.slug) for r in declared]
+            row["declared_blockers"] = [label(cfg, r, tracker.slug) for r in declared]
             row["action"] = 'unknown' if unknown else action(cfg, item["labels"], mine, trees.get(n), n)
             out["frontier"].append(row)
 
@@ -283,12 +299,12 @@ def main():
         # Tickets nobody acts on this tick (hold, leave, blocked with no agent) and that did not
         # change cost the tick model tokens for nothing; list their numbers only.
         delta = out['changes'] or {'action_changed': {}, 'entered_frontier': []}
-        moved = {int(n) for n in delta["action_changed"]} | set(delta["entered_frontier"])
+        moved = set(delta["action_changed"]) | set(delta["entered_frontier"])
         act = lambda row: row.get("action") not in (None, "hold", "leave") or row["number"] in moved
         shown = dict(out)
         for key in ("frontier", "blocked"):
             shown[key] = [row for row in out[key] if act(row)]
-            shown["quiet_" + key] = sorted(row["number"] for row in out[key] if not act(row))
+            shown["quiet_" + key] = sorted((row["number"] for row in out[key] if not act(row)), key=E.order)
     print(json.dumps(shown, indent=2))
     if record:
         tmp = baseline.with_suffix(".tmp")

@@ -65,7 +65,7 @@ A crashed agent is resumed in place, never re-dispatched from scratch, and its w
 
 ### Merge freeze preflight
 
-Immediately before **every dispatcher merge**, including a merge relayed to an author, run:
+Immediately before **every merge**, by the dispatcher or by an author whose estate has it merge its own PR, run:
 
 ```
 python3 ~/.agents/skills/dispatching-tickets/scripts/freeze.py <estate> --repo <repo-slug> --pr <n> --head <full-head-sha>

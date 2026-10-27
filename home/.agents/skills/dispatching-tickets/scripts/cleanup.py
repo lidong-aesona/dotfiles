@@ -24,13 +24,16 @@ APPLY = "--apply" in sys.argv[2:]
 
 
 class Tickets:
-    def __init__(self, slug):
-        self.slug, self._issues = slug, {}
+    def __init__(self, slug, cfg=None):
+        self.slug, self.cfg, self._issues = slug, cfg, {}
 
     def issue(self, n):
         if n not in self._issues:
             try:
-                raw = E.call('gh', 'issue', 'view', str(n), '--repo', self.slug,
+                # A prefixed key ("r235") lives on its own tracker: asking the main tracker
+                # for #235 would read an unrelated issue, often closed, and retire live work.
+                slug, number = E.locate(self.cfg, n) if self.cfg else (self.slug, n)
+                raw = E.call('gh', 'issue', 'view', str(number), '--repo', slug,
                              '--json', 'state,labels')
                 issue = E.parse(raw)
                 if not isinstance(issue, dict) or not isinstance(issue.get('labels'), list):
@@ -124,10 +127,10 @@ def close_tabs(cfg, tickets):
         if a.get("agent_status") not in ("idle", "done"):
             continue                                   # working or blocked: never close under it
         if not all(tickets.closed(number) for number in numbers):
-            kept.append((name, f'owned tickets {sorted(numbers)} are not all known closed'))
+            kept.append((name, f'owned tickets {sorted(numbers, key=E.order)} are not all known closed'))
             continue
-        owned = [w for w in trees if E.ticket_of_worktree(w.get('branch'), w['path']) in numbers]
-        proven = {E.ticket_of_worktree(w.get('branch'), w['path']) for w in owned}
+        owned = [w for w in trees if E.ticket_of_worktree(cfg, w.get('branch'), w['path']) in numbers]
+        proven = {E.ticket_of_worktree(cfg, w.get('branch'), w['path']) for w in owned}
         if proven != numbers:
             kept.append((name, 'not every owned ticket has a worktree to prove clean and landed'))
             continue
@@ -140,10 +143,10 @@ def close_tabs(cfg, tickets):
             kept.append((name, 'ticket worktree dirty, unreadable or unlanded'))
             continue
         if not APPLY:
-            closed.append((name, f"tickets {sorted(numbers)} closed, agent {a.get('agent_status')}"))
+            closed.append((name, f"tickets {sorted(numbers, key=E.order)} closed, agent {a.get('agent_status')}"))
             continue
         try:
-            reports = [archive_tail(cfg, number, name, a['machine']) for number in sorted(numbers)]
+            reports = [archive_tail(cfg, number, name, a['machine']) for number in sorted(numbers, key=E.order)]
         except E.Refused as e:
             machine_failed(errors, a['machine'], e)
             kept.append((name, 'machine failed while archiving'))
@@ -174,7 +177,7 @@ def close_tabs(cfg, tickets):
         if r.returncode:
             machine_failed(errors, a['machine'], r.stderr or 'tab close failed')
         (closed if r.returncode == 0 else kept).append(
-            (name, f"tickets {sorted(numbers)} closed, report at {saved}" if r.returncode == 0 else "tab close failed"))
+            (name, f"tickets {sorted(numbers, key=E.order)} closed, report at {saved}" if r.returncode == 0 else "tab close failed"))
     return closed, kept
 
 
@@ -247,7 +250,7 @@ def remove_worktrees(cfg, tickets):
         if ws and (machine, ws) in live_spaces:
             kept.append((label, 'an agent is live in its workspace'))
             continue
-        n = E.ticket_of_worktree(branch, path)
+        n = E.ticket_of_worktree(cfg, branch, path)
         if machine in errors or ticket_unknown(cfg, tickets, {n} if n is not None else set(), errors, listed, trees, previous):
             kept.append((label, 'ownership on an unreadable machine is unknown'))
             continue
@@ -293,7 +296,7 @@ def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     cfg = E.load(sys.argv[1])
-    tickets = Tickets(cfg["tracker"])
+    tickets = Tickets(cfg["tracker"], cfg)
     try:
         tabs_closed, tabs_kept = close_tabs(cfg, tickets)
         removed, kept = remove_worktrees(cfg, tickets)
