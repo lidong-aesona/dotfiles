@@ -2,6 +2,7 @@
 home/.config/herdr/*.log
 home/.config/herdr/session.json
 home/.config/herdr/*.sock
+home/.config/herdr/session-snapshots/
 
 # macOS + nix build noise
 .DS_Store
