@@ -53,7 +53,7 @@ def live_per_provider(cfg):
     by_suffix = {p.get("suffix", ""): p.get("provider") for p in cfg["agents"]["profiles"].values()}
     counts = {}
     for a in E.agents():
-        m = re.match(rf"^{re.escape(cfg['agent_prefix'])}\d+(.*)$", a.get("name") or "")
+        m = re.match(rf"^{re.escape(cfg['agent_prefix'])}(?:{E.prefix_pattern(cfg)})\d+(.*)$", a.get("name") or "")
         if not m:
             continue
         suffix = m.group(1)

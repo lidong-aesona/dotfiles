@@ -10,6 +10,9 @@ ticks changed nothing). The digest covers every ticket's labels, action, agents 
 and every watched agent's status and completion count, so any stop, label, close or new ticket
 runs the model. A dispatch or orphaned action always runs, and so does the first tick after
 [tick] max_skip_minutes. Unknown always runs: a read failure is not "nothing changed".
+An unreachable machine is the exception, as in frontier.py: its tickets are already `unknown`
+and a tick can do nothing for them, so it enters the digest as unreadable. Going unreachable or
+coming back changes the digest and runs; staying unreachable skips until max_skip_minutes.
 """
 
 from __future__ import annotations
@@ -36,24 +39,36 @@ def fleet_digest(estate: Path, config: dict) -> tuple[str, set[str]]:
     )
     if frontier.get("unreadable"):
         raise RuntimeError("unreadable tickets")
+    # Research keys ("r235") sort after main-tracker numbers; ints keep their old order.
     tickets = sorted(
-        (t["number"], t.get("labels"), t.get("action"), t.get("agents"), t.get("worktrees"))
-        for t in frontier["frontier"] + frontier["blocked"]
+        ((t["number"], t.get("labels"), t.get("action"), t.get("agents"), t.get("worktrees"))
+         for t in frontier["frontier"] + frontier["blocked"]),
+        key=lambda t: (isinstance(t[0], str), t[0]),
     )
     actions = {str(t.get("action")) for t in frontier["frontier"] + frontier["blocked"]}
     agents = []
     watcher = config.get("watcher", {})
     for machine in watcher.get("machines", [""]):
         command = ["herdr"] + (["--machine", machine] if machine else []) + ["agent", "list"]
-        listed = json.loads(
-            subprocess.run(command, capture_output=True, text=True, timeout=60, check=True).stdout
-        )["result"]["agents"]
+        try:
+            listed = json.loads(
+                subprocess.run(command, capture_output=True, text=True, timeout=60, check=True).stdout
+            )["result"]["agents"]
+        except (subprocess.SubprocessError, ValueError, KeyError) as error:
+            if not machine:
+                raise
+            agents.append((machine, "unreadable", type(error).__name__, None))
+            continue
         agents += sorted(
             (machine, a.get("name"), a.get("agent_status"), a.get("completion_seq"))
             for a in listed
             if a.get("name") and a["name"] not in watcher.get("ignore", [])
         )
-    blob = json.dumps([tickets, agents, frontier.get("holds"), frontier.get("freeze")], sort_keys=True)
+    blob = json.dumps(
+        [tickets, agents, frontier.get("holds"), frontier.get("freeze"),
+         sorted(frontier.get("machine_errors") or {})],
+        sort_keys=True,
+    )
     return hashlib.sha256(blob.encode()).hexdigest(), actions
 
 

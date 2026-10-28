@@ -87,6 +87,15 @@ def test_vm_action_is_identical_to_original_policy(cfg):
     assert frontier.action(cfg, ['fleet:w1'], [], [], 7) == 'dispatch'
 
 
+def test_vm_dispatch_requires_gates_fresh_dispatch_only(cfg):
+    cfg['labels']['dispatch_requires'] = 'ready-for-agent'
+    assert frontier.action(cfg, ['fleet:w1'], [], [], 7) == 'hold'
+    assert frontier.action(cfg, ['fleet:w1', 'ready-for-agent'], [], [], 7) == 'dispatch'
+    assert frontier.action(cfg, ['fleet:w1'], [], ['/wt/7'], 7) == 'orphaned'
+    assert frontier.action(cfg, ['fleet:w1'], [{'name': 'w1-ticket-7c', 'agent_status': 'idle'}], [], 7) == 'read'
+    assert frontier.action(cfg, ['fleet:w1', 'ready-for-human'], [], [], 7) == 'hold'
+
+
 def test_dual_fleet_conflict_holds_without_refusing_whole_tick(cfg):
     for agents in ([], [{'agent_status': 'working'}]):
         assert frontier.action(cfg, ['fleet:w1', 'fleet:mac', 'ready-for-agent'], agents, [], 7) == 'hold'
@@ -325,8 +334,81 @@ def test_unnamed_agent_requires_explicit_pane_and_tracks_numbered_cwd(cfg):
 
 
 @pytest.mark.parametrize('path', ['/mac/build-7-work', '/mac/aesonaOS-7', '/mac/7-work'])
-def test_detached_worktree_directory_carries_ticket(path):
-    assert E.ticket_of_worktree(None, path) == 7
+def test_detached_worktree_directory_carries_ticket(cfg, path):
+    assert E.ticket_of_worktree(cfg, None, path) == 7
+
+
+@pytest.fixture
+def research(cfg):
+    return dict(cfg, trackers=[dict(slug='a/research', prefix='r')])
+
+
+def test_prefixed_keys_never_read_as_main_tracker_numbers(cfg, research):
+    assert E.ticket_of_worktree(research, 'build/r235-skills', '/w/build-r235-skills') == 'r235'
+    assert E.ticket_of_worktree(research, None, '/w/build-r235-skills') == 'r235'
+    assert E.ticket_of_agent(research, 'w1-ticket-r235o') == 'r235'
+    assert E.ticket_of_agent(research, 'w1-ticket-235o') == 235
+    # Without the tracker configured, a prefixed name carries no ticket rather than 235.
+    assert E.ticket_of_worktree(cfg, 'build/r235-skills', '/w/build-r235-skills') is None
+    assert E.ticket_of_agent(cfg, 'w1-ticket-r235o') is None
+    assert E.ticket_of_worktree(research, 'build/v2-thing', '/w/build-v2-thing') is None
+    assert E.ticket_of_worktree(research, None, '/w/r899-af181e83') is None
+    assert E.ticket_of_worktree(research, 'codex/r12-x', '/w/r12-x') is None
+    assert E.ticket_of_worktree(research, 'codex/1414-x', '/w/x') == 1414
+    assert E.locate(research, 'r235') == ('a/research', 235)
+    assert E.parse_key(research, '#1254') == 1254
+    with pytest.raises(E.Refused):
+        E.locate(research, 'x235')
+    assert sorted(['r12', 1300, 'r3', 7], key=E.order) == [7, 1300, 'r3', 'r12']
+
+
+@pytest.mark.parametrize('trackers', [[dict(slug='a/b', prefix='r')], [dict(slug='a/r', prefix='')],
+                                      [dict(slug='a/r', prefix='r'), dict(slug='a/s', prefix='r')]])
+def test_load_refuses_ambiguous_trackers(cfg, trackers):
+    root = cfg['_root']
+    (root / 'estate.toml').write_text('tracker = "a/b"\n' + ''.join(
+        f'[[trackers]]\nslug = "{t["slug"]}"\nprefix = "{t["prefix"]}"\n' for t in trackers))
+    with pytest.raises(SystemExit):
+        E.load(root)
+
+
+def test_frontier_lists_research_issues_under_their_keys(research):
+    research = dict(research, holds=['r236'])
+    main = Mock(slug='a/b', open={235: dict(pr=False, title='old aOS work', labels=['fleet:w1'])})
+    other = Mock(slug='a/research', open={
+        235: dict(pr=False, title='skills index', labels=['fleet:w1']),
+        236: dict(pr=False, title='held', labels=['fleet:w1'])})
+    for t in (main, other):
+        t.blockers.return_value = ([('a/b', 9)], [])
+    out = io.StringIO()
+    with patch.object(E, 'load', return_value=research), \
+         patch.object(frontier, 'Tracker', side_effect=lambda slug: {'a/b': main, 'a/research': other}[slug]), \
+         patch.object(E, 'agents', return_value=[]), patch.object(E, 'worktrees', return_value=[]), \
+         patch('sys.argv', ['frontier.py', str(research['_root'])]), contextlib.redirect_stdout(out):
+        frontier.main()
+    rows = {r['number']: r for r in json.loads(out.getvalue())['frontier']}
+    assert list(rows) == [235, 'r235', 'r236']
+    assert rows['r235']['action'] == 'dispatch' and rows['r236']['action'] == 'hold'
+    assert rows[235]['declared_blockers'] == [9] and rows['r235']['declared_blockers'] == ['a/b#9']
+    other.blockers.assert_any_call(235)
+    assert main.peers == {'a/research': other}
+
+
+def test_frontier_refuses_unowned_hold_keys(research):
+    for holds in (['x1'], ['235'], [0], [True]):
+        out = io.StringIO()
+        with patch.object(E, 'load', return_value=dict(research, holds=holds)), \
+             patch('sys.argv', ['frontier.py', str(research['_root'])]), contextlib.redirect_stdout(out), \
+             pytest.raises(SystemExit):
+            frontier.main()
+        assert 'holds must list' in out.getvalue()
+
+
+def test_cleanup_reads_a_prefixed_ticket_on_its_own_tracker(research):
+    issue = {'state': 'OPEN', 'labels': []}
+    with patch.object(E, 'call', return_value=json.dumps(issue)) as call:
+        assert not cleanup.Tickets('a/b', research).closed('r235')
+    assert call.call_args.args[3:6] == ('235', '--repo', 'a/research')
 
 
 def test_remote_commands_explicit_and_shell_quoted(cfg):
