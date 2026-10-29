@@ -18,7 +18,12 @@ fi
 echo "==> Step 2: symlink this repo to ~/.dotfiles"
 # home.nix resolves its mkOutOfStoreSymlink paths through ~/.dotfiles, so this
 # has to exist before the first switch or the build will fail to find them.
-ln -sfn "$DIR" ~/.dotfiles
+# A real directory at ~/.dotfiles is a checkout: `ln` would plant the link inside it.
+if [[ -d ~/.dotfiles && ! -L ~/.dotfiles ]]; then
+  [[ "$(cd ~/.dotfiles && pwd -P)" == "$DIR" ]] || { echo "$HOME/.dotfiles is another checkout, not $DIR" >&2; exit 1; }
+else
+  ln -sfn "$DIR" ~/.dotfiles
+fi
 
 echo "==> Step 3: personalize the configured username"
 # Do this before any sudo call: sudo resets $USER to root, so whoami has to

@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-ln -sfn "$DIR" "$HOME/.dotfiles"
+# A real directory at ~/.dotfiles is a checkout: `ln` would plant the link inside it.
+if [[ -d "$HOME/.dotfiles" && ! -L "$HOME/.dotfiles" ]]; then
+  [[ "$(cd "$HOME/.dotfiles" && pwd -P)" == "$DIR" ]] || { echo "$HOME/.dotfiles is another checkout, not $DIR" >&2; exit 1; }
+else
+  ln -sfn "$DIR" "$HOME/.dotfiles"
+fi
 
 if ! command -v nix >/dev/null 2>&1 && [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
   # shellcheck disable=SC1091
