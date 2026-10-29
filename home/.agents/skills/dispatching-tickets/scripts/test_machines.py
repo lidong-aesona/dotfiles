@@ -1,4 +1,4 @@
-"""Offline multi-machine regressions. No test may reach ssh or herdr."""
+"""Offline multi-machine regressions. No test may reach ssh or hc."""
 import contextlib
 import io
 import json
@@ -17,6 +17,16 @@ def no_external_processes(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError(f'unfaked external process: {args}')
     monkeypatch.setattr(E.subprocess, 'run', forbidden)
+
+
+def agent(name, status='done', machine='', terminal='t1', **extra):
+    """An agent as `E.agents` lists it."""
+    return dict(name=name, agent_status=status, machine=machine, terminal=terminal,
+                address=E.address(machine, terminal), cwd='/home', **extra)
+
+
+def hc_ls(*terminals, mac='connected'):
+    return json.dumps({'machines': [{'name': 'mac', 'state': mac}], 'terminals': list(terminals)})
 
 
 @pytest.fixture
@@ -156,24 +166,24 @@ def test_sleeping_mac_does_not_stop_vm_retirement_or_erase_closed_owner_guard(cf
                     unknown_ownership={'mac': [8]})
     (cfg['_root'] / 'last-tick.json').write_text(json.dumps(baseline))
     local_tree = dict(tree(cfg, ''), branch='build/10-work', path='/vm/10-work')
-    guarded_tree = dict(tree(cfg, ''), branch='build/8-work', path='/vm/8-work', open_workspace_id='w8')
-    agent = dict(name='w1-ticket-10o', agent_status='done', machine='', tab_id='w1:t1')
-    guarded_agent = dict(name='w1-ticket-8o', agent_status='done', machine='', tab_id='w8:t1')
-    with patch.object(E, 'agents', side_effect=[[agent, guarded_agent], E.Refused('Mac sleeping'), [agent]]), \
+    guarded_tree = dict(tree(cfg, ''), branch='build/8-work', path='/vm/8-work')
+    local = agent('w1-ticket-10o')
+    guarded_agent = agent('w1-ticket-8o', terminal='t8')
+    with patch.object(E, 'agents', side_effect=[[local, guarded_agent], E.Refused('Mac sleeping'), [local]]), \
          patch.object(E, 'worktrees', return_value=[local_tree, guarded_tree]), \
          patch.object(cleanup, 'retirable', return_value='merged'), patch.object(cleanup, 'APPLY', True), \
          patch.object(cleanup, 'archive_tail', return_value=Path('/report')), \
          patch.object(E, 'run', return_value=Mock(returncode=0)) as run:
-        closed, kept = cleanup.close_tabs(cfg, Mock(closed=Mock(return_value=True)))
+        closed, kept = cleanup.retire_agents(cfg, Mock(closed=Mock(return_value=True)))
         assert len(closed) == len(kept) == 1
-        assert run.call_args.args[:3] == ('herdr', 'tab', 'close')
+        assert [c.args for c in run.call_args_list] == [('hc', 'kill', 't1'), ('hc', 'rm', 't1')]
     with patch.object(E, 'agents', side_effect=[[], E.Refused('Mac sleeping')]), \
-         patch.object(E, 'worktrees', return_value=[local_tree, guarded_tree]), \
+         patch.object(E, 'worktrees', return_value=[local_tree, guarded_tree]), patch.object(E, 'terminals', return_value=[]), \
          patch.object(cleanup, 'retirable', return_value='merged'), patch.object(cleanup, 'APPLY', True), \
          patch.object(E, 'run', return_value=Mock(returncode=0)) as run:
         removed, kept = cleanup.remove_worktrees(cfg, Mock(closed=Mock(return_value=True)))
         assert len(removed) == len(kept) == 1
-        assert run.call_count == 1 and '--machine' not in run.call_args.args
+        assert run.call_count == 1 and run.call_args.args == ('git', 'worktree', 'remove', '/vm/10-work')
     assert 'Mac sleeping' in capsys.readouterr().out
 
 
@@ -203,16 +213,15 @@ def test_explicit_machine_qualified_baseline_accepts_other_estate_prefix(cfg):
 
 def test_sleeping_mac_quarantines_mac_routed_local_leftovers(cfg):
     local = dict(tree(cfg, ''), branch='build/7-work')
-    agent = dict(name='w1-ticket-7o', agent_status='done', machine='', tab_id='w1:t1')
     tickets = Mock(closed=Mock(return_value=True), machine=Mock(return_value='mac'))
-    with patch.object(E, 'agents', side_effect=[[agent], E.Refused('sleeping')]), \
+    with patch.object(E, 'agents', side_effect=[[agent('w1-ticket-7o')], E.Refused('sleeping')]), \
          patch.object(E, 'worktrees', return_value=[local]), patch.object(cleanup, 'APPLY', True), \
          patch.object(cleanup, 'retirable', return_value='merged'), patch.object(cleanup, 'archive_tail') as archive:
-        assert cleanup.close_tabs(cfg, tickets)[0] == []
+        assert cleanup.retire_agents(cfg, tickets)[0] == []
         archive.assert_not_called()
     with patch.object(E, 'agents', side_effect=[[], E.Refused('sleeping')]), \
          patch.object(E, 'worktrees', return_value=[local]), patch.object(cleanup, 'APPLY', True), \
-         patch.object(cleanup, 'retirable', return_value='merged'):
+         patch.object(E, 'terminals', return_value=[]), patch.object(cleanup, 'retirable', return_value='merged'):
         assert cleanup.remove_worktrees(cfg, tickets)[0] == []
 
 
@@ -226,7 +235,7 @@ def test_remote_git_timeout_after_inventory_keeps_vm_retirement_running(cfg):
         return Mock(returncode=0, stdout='')
     with patch.object(E, 'inventory', return_value=([], [remote_tree, local_tree])), \
          patch.object(cleanup, 'APPLY', True), patch.object(E, 'machine_run', side_effect=run), \
-         patch.object(cleanup, 'landed', return_value='merged'), patch.object(E, 'run', return_value=Mock(returncode=0)):
+         patch.object(cleanup, 'landed', return_value='merged'), patch.object(E, 'terminals', return_value=[]):
         removed, kept = cleanup.remove_worktrees(cfg, tickets)
     assert len(removed) == len(kept) == 1
     assert removed[0][0].startswith('local:')
@@ -245,19 +254,19 @@ def test_cleanup_reads_and_caches_closed_ticket_machine_labels(cfg):
 
 
 @pytest.mark.parametrize('phase', ['archive', 'recheck', 'close'])
-def test_late_mac_terminal_failure_does_not_stop_vm_tab_retirement(cfg, phase):
-    remote = dict(name='mac-7-codex', agent_status='done', machine='mac', tab_id='w1:t1')
-    local = dict(name='w1-ticket-10o', agent_status='done', machine='', tab_id='w2:t1')
+def test_late_mac_terminal_failure_does_not_stop_vm_retirement(cfg, phase):
+    remote = agent('mac-7-codex', machine='mac')
+    local = agent('w1-ticket-10o', terminal='t2')
     local_tree = dict(tree(cfg, ''), branch='build/10-work', path='/vm/10-work')
     tickets = Mock(closed=Mock(return_value=True), machine=Mock(side_effect=lambda n, c: 'mac' if n == 7 else ''))
     archive = [E.Refused('Mac tail timed out'), Path('/report')] if phase == 'archive' else [Path('/report')] * 2
     recheck = ([local],) if phase == 'archive' else ([E.Refused('Mac status timed out'), [local]] if phase == 'recheck' else [[remote], [local]])
-    closes = [E.Refused('Mac close timed out'), Mock(returncode=0)] if phase == 'close' else [Mock(returncode=0)]
+    closes = ([E.Refused('Mac kill timed out')] if phase == 'close' else []) + [Mock(returncode=0)] * 2
     with patch.object(E, 'inventory', return_value=([remote, local], [tree(cfg), local_tree])), \
          patch.object(cleanup, 'APPLY', True), patch.object(cleanup, 'retirable', return_value='merged'), \
          patch.object(cleanup, 'archive_tail', side_effect=archive), patch.object(E, 'agents', side_effect=recheck), \
          patch.object(E, 'run', side_effect=closes):
-        closed, kept = cleanup.close_tabs(cfg, tickets)
+        closed, kept = cleanup.retire_agents(cfg, tickets)
     assert len(closed) == len(kept) == 1
     assert closed[0][0] == 'w1-ticket-10o'
 
@@ -272,7 +281,7 @@ def test_late_mac_failure_quarantines_historical_local_tree_while_other_vm_tree_
         return Mock(returncode=0, stdout='')
     with patch.object(E, 'inventory', return_value=([], [tree(cfg), guarded, independent])), \
          patch.object(cleanup, 'APPLY', True), patch.object(E, 'machine_run', side_effect=run), \
-         patch.object(cleanup, 'landed', return_value='merged'), patch.object(E, 'run', return_value=Mock(returncode=0)):
+         patch.object(cleanup, 'landed', return_value='merged'), patch.object(E, 'terminals', return_value=[]):
         removed, kept = cleanup.remove_worktrees(cfg, Mock(closed=Mock(return_value=True), machine=Mock(return_value='')))
     assert len(removed) == 1 and len(kept) == 2
     assert removed[0][0].endswith('/10-work')
@@ -316,24 +325,68 @@ def test_label_routes_from_config_and_conflict_refuses(cfg):
 
 
 def test_malformed_remote_lists_refuse(cfg):
-    for value in (None, {}, 'empty', [None], [{'name': 'x'}],
-                  [{'agent_status': 'working'}], [{'name': None, 'agent_status': 'working'}],
-                  [{'name': '', 'agent_status': 'working'}]):
-        with patch.object(E, 'call', return_value=json.dumps({'result': {'agents': value}})):
+    good = {'address': 'mac/t1', 'state': 'live', 'cwd': '/mac/x', 'status': 'idle'}
+    for terminals in (None, {}, 'empty', [None], [{'address': 'mac/t1'}],
+                      [dict(good, address='')], [dict(good, address=None)],
+                      [dict(good, state=None)], [dict(good, cwd='relative')], [dict(good, cwd=None)]):
+        raw = json.dumps({'machines': [{'name': 'mac', 'state': 'connected'}], 'terminals': terminals})
+        with patch.object(E, 'call', return_value=raw):
             with pytest.raises(E.Refused):
                 E.agents('mac')
+    for raw in ('not json', json.dumps({'terminals': []}), hc_ls(good, mac='disconnected'),
+                json.dumps({'machines': [], 'terminals': [good]})):
+        with patch.object(E, 'call', return_value=raw), pytest.raises(E.Refused):
+            E.agents('mac')
 
 
-def test_unnamed_agent_requires_explicit_pane_and_tracks_numbered_cwd(cfg):
-    raw = {'result': {'agents': [{'pane_id': 'w2:p1', 'cwd': '/mac/aesonaOS-7', 'agent_status': 'working'}]}}
-    with patch.object(E, 'call', return_value=json.dumps(raw)):
+def test_agents_are_named_or_reporting_terminals_on_one_machine(cfg):
+    raw = hc_ls({'address': 't1', 'state': 'live', 'cwd': '/vm/build-5-x', 'status': 'working'},
+                {'address': 't2', 'state': 'live', 'cwd': '/home'},                       # a plain shell
+                {'address': 't3', 'state': 'finished', 'cwd': '/vm/x', 'name': 'w1-ticket-6o'},
+                {'address': 't4', 'state': 'finished', 'cwd': '/vm/build-9-x'},           # unnamed and gone
+                {'address': 'mac/t1', 'state': 'live', 'cwd': '/mac/x', 'name': 'mac-7-codex', 'status': 'idle'})
+    with patch.object(E, 'call', return_value=raw):
+        local, remote = E.agents(''), E.agents('mac')
+        shells = E.terminals('')
+    assert [(a['name'], a['agent_status'], a['address']) for a in local] == [('t1', 'working', 't1'), ('w1-ticket-6o', 'exited', 't3')]
+    assert E.agent_tickets(cfg, local[0]) == {5}
+    assert [(a['name'], a['terminal'], a['address']) for a in remote] == [('mac-7-codex', 't1', 'mac/t1')]
+    assert [t['address'] for t in shells] == ['t1', 't2']
+
+
+def test_stop_mark_is_status_time_and_refuses_when_unreadable():
+    live = {'address': 'mac/t1', 'agent_status': 'idle'}
+    with patch.object(E, 'call', return_value=json.dumps({'status_ms': 17, 'turn': 0})) as call:
+        assert E.stop_mark(live) == 17
+    assert call.call_args.args == ('hc', 'get', '--json', 'mac/t1')
+    with patch.object(E, 'call') as call:
+        assert E.stop_mark(dict(live, agent_status='exited')) is None
+    call.assert_not_called()
+    for raw in (json.dumps({'turn': 0}), json.dumps({'status_ms': None})):
+        with patch.object(E, 'call', return_value=raw), pytest.raises(E.Refused):
+            E.stop_mark(live)
+
+
+def test_ignored_matches_configured_names_and_labelled_terminals():
+    with patch.object(E, 'call', return_value=json.dumps({'terminals': [{'address': 't5'}]})) as call:
+        skip = E.ignored({'ignore': ['w1-operator']})
+    assert call.call_args.args == ('hc', 'ls', '--json', '--all', '--label', 'dispatch.ignore=1')
+    assert skip(agent('w1-operator', terminal='t9')) and skip(agent('t5', terminal='t5'))
+    assert not skip(agent('t6', terminal='t6')) and not skip(agent('t5', machine='mac', terminal='t5'))
+    with patch.object(E, 'call', return_value='{"terminals": null}'), pytest.raises(E.Refused):
+        E.ignored({})
+
+
+def test_unnamed_agent_is_addressed_by_terminal_and_tracks_numbered_cwd(cfg):
+    raw = hc_ls({'address': 'mac/t3', 'cwd': '/mac/app-7', 'state': 'live', 'status': 'working'})
+    with patch.object(E, 'call', return_value=raw):
         listed = E.agents('mac')
-    assert listed[0]['name'] == 'w2:p1'
+    assert listed[0]['name'] == 't3' and listed[0]['address'] == 'mac/t3'
     assert E.ticket_agents(cfg, listed, 7) == listed
-    assert E.agent_tickets(cfg, dict(name='mac-6-codex', cwd='/mac/aesonaOS-7')) == {6, 7}
+    assert E.agent_tickets(cfg, dict(name='mac-6-codex', cwd='/mac/app-7')) == {6, 7}
 
 
-@pytest.mark.parametrize('path', ['/mac/build-7-work', '/mac/aesonaOS-7', '/mac/7-work'])
+@pytest.mark.parametrize('path', ['/mac/build-7-work', '/mac/app-7', '/mac/7-work'])
 def test_detached_worktree_directory_carries_ticket(cfg, path):
     assert E.ticket_of_worktree(cfg, None, path) == 7
 
@@ -418,21 +471,37 @@ def test_remote_commands_explicit_and_shell_quoted(cfg):
     assert command[:3] == ('ssh', '-n', '-o')
     assert 'herdr-mac' in command
     assert 'zsh -lic' in command[-1]
-    with patch.object(E, 'call', return_value='{"result":{"agents":[]}}') as call:
+    with patch.object(E, 'call', return_value=hc_ls()) as call:
         assert E.agents('mac') == []
-        assert call.call_args.args[:3] == ('herdr', '--machine', 'mac')
+        assert call.call_args.args == ('hc', 'ls', '--json', '--all')
 
 
 def tree(cfg, machine='mac'):
-    return dict(path='/mac/tree', branch='build/7-work', open_workspace_id='w1',
+    return dict(path='/mac/tree', branch='build/7-work', is_detached=False,
                 machine=machine, repo=E.machine_repos(cfg, machine)[0])
 
 
 def test_failed_or_malformed_worktree_read_refuses(cfg):
-    for raw in ('not json', '{"result":{"worktrees":null}}',
-                '{"result":{"worktrees":[{}]}}'):
+    repo = E.machine_repos(cfg, 'mac')[0]
+    for raw in ('not porcelain', '', 'worktree relative/path\nHEAD abc'):
         with patch.object(E, 'call', return_value=raw), pytest.raises(E.Refused):
-            E.worktrees(E.machine_repos(cfg, 'mac')[0], 'mac')
+            E.worktrees(cfg, repo, 'mac')
+    with patch.object(E, 'call', side_effect=E.Refused('ssh failed')), pytest.raises(E.Refused):
+        E.worktrees(cfg, repo, 'mac')
+
+
+def test_worktrees_parse_porcelain_skip_main_and_keep(cfg):
+    repo = dict(E.machine_repos(cfg, 'mac')[0], keep=['long-lived'])
+    raw = ('worktree /Users/test/app\nHEAD aaa\nbranch refs/heads/main\n\n'
+           'worktree /w/build-7-work\nHEAD bbb\nbranch refs/heads/build/7-work\n\n'
+           'worktree /w/8-detached\nHEAD ccc\ndetached\n\n'
+           'worktree /w/long-lived\nHEAD ddd\nbranch refs/heads/keep\n')
+    with patch.object(E, 'call', return_value=raw) as call:
+        listed = E.worktrees(cfg, repo, 'mac')
+    assert call.call_args.args[:2] == ('ssh', '-n')
+    assert "git -C /Users/test/app worktree list --porcelain" in call.call_args.args[-1]
+    assert listed == [dict(path='/w/build-7-work', is_detached=False, branch='build/7-work'),
+                      dict(path='/w/8-detached', is_detached=True, branch=None)]
 
 
 def test_vm_label_also_protected_by_remote_owner(cfg):
@@ -441,20 +510,26 @@ def test_vm_label_also_protected_by_remote_owner(cfg):
     assert result['frontier'][0]['action'] == 'unknown'
 
 
-def test_file_delivery_copies_bytes_not_prompt_in_ssh(cfg):
-    path = cfg['_root'] / 'long.md'
-    text = "quotes ' \" $HOME\n" * 10000
+def test_file_delivery_pastes_wrapped_text_through_hc_never_ssh(cfg):
+    path = cfg['_root'] / 'prompt.md'
+    text = "quotes ' \" $HOME\n" * 1000
     path.write_text(text)
-    with patch.object(E, 'machine_call', return_value='') as remote, patch.object(E, 'call', return_value='') as call:
+    with patch.object(E, 'machine_call') as remote, patch.object(E, 'call', return_value='') as call:
         D.send_file(cfg, 'mac', 'mac-7-codex', path)
-    assert call.call_args.args[0] == 'scp'
-    delivered = path.with_name('long.mac-delivery.md')
-    assert str(delivered) in call.call_args.args
-    assert delivered.read_text().endswith(text)
-    assert 'Offline only' in delivered.read_text()
-    assert text not in repr(remote.call_args_list)
-    assert remote.call_args.args[2:4] == ('python3', '-c')
-    assert 'read_text' in remote.call_args.args[4]
+    remote.assert_not_called()
+    assert call.call_args.args[:3] == ('hc', 'send', 'mac/mac-7-codex')
+    assert call.call_args.kwargs['tries'] == 1
+    sent = call.call_args.args[3]
+    assert sent.endswith(text) and 'Offline only' in sent
+    assert path.with_name('prompt.mac-delivery.md').read_text() == sent
+
+
+def test_oversized_prompt_refuses_before_sending(cfg):
+    path = cfg['_root'] / 'long.md'
+    path.write_text('x' * (D.MAX_PROMPT + 1))
+    with patch.object(E, 'call') as call, pytest.raises(E.Refused, match='over'):
+        D.send_file(cfg, 'mac', 'mac-7-codex', path)
+    call.assert_not_called()
 
 
 @pytest.mark.parametrize('tail,state', [('Error: fetch failed', 'crashed'), ('quota', 'exhausted'),
@@ -462,7 +537,7 @@ def test_file_delivery_copies_bytes_not_prompt_in_ssh(cfg):
 def test_remote_recovery_tail_classification(cfg, tail, state):
     with patch.object(E, 'call', return_value=tail) as call:
         assert D.read_tail(cfg, 'mac', 'mac-7-codex')['classification'] == state
-    assert call.call_args.args[:3] == ('herdr', '--machine', 'mac')
+    assert call.call_args.args == ('hc', 'read', 'mac/mac-7-codex', '--lines', '150')
     with patch.object(E, 'call', return_value=''), pytest.raises(E.Refused):
         D.read_tail(cfg, 'mac', 'mac-7-codex')
 
@@ -492,30 +567,63 @@ def test_handover_assembly_keeps_mac_safety_preamble(cfg):
     assert 'preserve existing work on recovery' in body
 
 
+MAC_TREE = '/Users/test/.herdr/worktrees/app/build-7-work'
+
+
+def launch_hc(status='idle'):
+    """Fake hc replies for a launch: run starts the agent, get reports its status."""
+    def call(*args, **kwargs):
+        if args[:2] == ('hc', 'run'):
+            return json.dumps({'address': 'mac/t7', 'state': 'live'})
+        if args[:2] == ('hc', 'get'):
+            return json.dumps({'status': status and {'app': 'pi', 'state': status}})
+        raise AssertionError(f'unexpected hc call {args}')
+    return call
+
+
 def test_launch_fetches_verifies_starts_and_delivers_assembled_prompt(cfg):
     tracker = launch_fakes(cfg)
-    created = dict(tree(cfg), branch='build/7-work')
+    created = dict(tree(cfg), branch='build/7-work', path=MAC_TREE)
     def remote(*args, **kwargs):
         return 'a' * 40 if 'rev-parse' in args else ''
-    def call(*args, **kwargs):
-        if 'pane' in args:
-            return json.dumps({'result': {'panes': [{'pane_id': 'w1:p1'}]}})
-        return '{}'
     with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=([], [])), \
          patch.object(frontier, 'Tracker', return_value=tracker), patch.object(E, 'worktrees', return_value=[created]), \
-         patch.object(E, 'machine_call', side_effect=remote) as commands, patch.object(E, 'call', side_effect=call) as calls, \
+         patch.object(E, 'machine_call', side_effect=remote) as commands, patch.object(E, 'call', side_effect=launch_hc()) as calls, \
+         patch.object(E, 'run', return_value=Mock(returncode=0)) as waits, \
          patch.object(D, 'send_file') as send, patch.object(D, 'read_tail', return_value={'classification': 'stopped'}):
         D.launch(cfg, 7, 'app', 'work')
     prompt = send.call_args.args[-1].read_text()
     assert 'mac-7-codex' in prompt and 'Offline only' in prompt and 'shared Mac gate lock' in prompt
     assert 'Shared estate rules.' in prompt and 'Work ticket #7.' in prompt
-    assert commands.call_args_list[0].args[2:5] == ('git', 'fetch', 'origin')
-    create = next(c for c in calls.call_args_list if 'create' in c.args)
-    assert create.args[create.args.index('--base') + 1] == 'a' * 40
-    start = next(c for c in calls.call_args_list if 'start' in c.args)
-    assert '--append-system-prompt' in start.args and 'mac-7-codex' in start.args
-    assert '/Users/test/.claude/skills/implement/SKILL.md' in start.args
-    assert 'Machine: mac' in (cfg['_root'] / 'tickets/7/head.md').read_text()
+    git = [c.args[2:] for c in commands.call_args_list]
+    assert git[0] == ('git', 'fetch', 'origin')
+    assert git[2] == ('git', 'worktree', 'add', '-b', 'build/7-work', MAC_TREE, 'a' * 40)
+    start = calls.call_args_list[0]
+    assert start.kwargs['tries'] == 1
+    argv = start.args
+    assert argv[:5] == ('hc', 'run', '--on', 'mac', '--bg')
+    assert argv[argv.index('--name') + 1] == 'mac-7-codex' and argv[argv.index('--cwd') + 1] == MAC_TREE
+    assert argv[argv.index('--label') + 1] == 'herdr.space=ticket-7'
+    assert {'--no-parent', '--outlive-parent'} <= set(argv)
+    assert argv[argv.index('--') + 1:-1] == ('zsh', '-lic')
+    assert argv[-1] == "exec pi --model gpt-6.1-sol --append-system-prompt /Users/test/.claude/skills/implement/SKILL.md"
+    assert waits.call_args.args[:3] == ('hc', 'wait', 'mac/mac-7-codex')
+    wait = int(waits.call_args.args[-1])
+    assert waits.call_args.kwargs['timeout'] > wait  # the subprocess outlives hc's own wait
+    assert 'Machine: mac; agent: mac-7-codex; space: ticket-7' in (cfg['_root'] / 'tickets/7/head.md').read_text()
+
+
+@pytest.mark.parametrize('status', [None, 'working', 'blocked'])
+def test_launch_never_sends_to_an_agent_that_is_not_idle(cfg, status):
+    tracker = launch_fakes(cfg)
+    created = dict(tree(cfg), branch='build/7-work', path=MAC_TREE)
+    with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=([], [])), \
+         patch.object(frontier, 'Tracker', return_value=tracker), patch.object(E, 'worktrees', return_value=[created]), \
+         patch.object(E, 'machine_call', side_effect=lambda *a, **k: 'a' * 40 if 'rev-parse' in a else ''), \
+         patch.object(E, 'call', side_effect=launch_hc(status)), patch.object(E, 'run', return_value=Mock(returncode=0)), \
+         patch.object(D, 'send_file') as send, pytest.raises(E.Refused, match='do not resend'):
+        D.launch(cfg, 7, 'app', 'work')
+    send.assert_not_called()
 
 
 @pytest.mark.parametrize('owners', [([{'name': 'mac-7-codex'}], []), ([], [{'path': '/mac/tree', 'branch': 'build/7-work'}])])
@@ -528,72 +636,93 @@ def test_launch_rechecks_all_machine_ownership(cfg, owners):
 def test_launch_does_not_retry_or_start_after_create_failure(cfg):
     tracker = launch_fakes(cfg)
     with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=([], [])), \
-         patch.object(frontier, 'Tracker', return_value=tracker), patch.object(E, 'machine_call', return_value='a' * 40), \
-         patch.object(E, 'call', side_effect=E.Refused('lost create reply')) as call, pytest.raises(E.Refused):
+         patch.object(frontier, 'Tracker', return_value=tracker), \
+         patch.object(E, 'machine_call', side_effect=['', 'a' * 40, E.Refused('lost create reply')]) as remote, \
+         patch.object(E, 'call') as call, pytest.raises(E.Refused):
         D.launch(cfg, 7, 'app', 'work')
-    assert call.call_count == 1 and call.call_args.kwargs['tries'] == 1
+    assert remote.call_count == 3
+    call.assert_not_called()
 
 
 @pytest.mark.parametrize('state', ['working', 'blocked', 'unknown'])
 def test_cleanup_never_closes_live_mac_agent(cfg, state):
-    agent = dict(name='mac-7-codex', agent_status=state, machine='mac', workspace_id='w1', tab_id='w1:t1')
-    with patch.object(E, 'inventory', return_value=([agent], [tree(cfg)])), patch.object(cleanup, 'APPLY', True):
-        assert cleanup.close_tabs(cfg, Mock(closed=Mock(return_value=True)))[0] == []
+    live = agent('mac-7-codex', state, 'mac')
+    with patch.object(E, 'inventory', return_value=([live], [tree(cfg)])), patch.object(cleanup, 'APPLY', True), \
+         patch.object(E, 'terminals', return_value=[]):
+        assert cleanup.retire_agents(cfg, Mock(closed=Mock(return_value=True)))[0] == []
         assert cleanup.remove_worktrees(cfg, Mock(closed=Mock(return_value=True)))[0] == []
 
 
 @pytest.mark.parametrize('closed,landed', [(False, 'merged'), (True, None)])
 def test_cleanup_closed_and_landed_are_both_required(cfg, closed, landed):
-    agent = dict(name='mac-7-codex', agent_status='done', machine='mac', tab_id='w1:t1')
-    with patch.object(E, 'inventory', return_value=([agent], [tree(cfg)])), \
+    with patch.object(E, 'inventory', return_value=([agent('mac-7-codex', machine='mac')], [tree(cfg)])), \
          patch.object(cleanup, 'retirable', return_value=landed), patch.object(cleanup, 'APPLY', True):
-        assert cleanup.close_tabs(cfg, Mock(closed=Mock(return_value=closed)))[0] == []
+        assert cleanup.retire_agents(cfg, Mock(closed=Mock(return_value=closed)))[0] == []
 
 
 @pytest.mark.parametrize('closed_second,landed_second', [(False, True), (True, False)])
 def test_cleanup_preserves_agent_owning_another_open_or_unlanded_ticket(cfg, closed_second, landed_second):
-    agent = dict(name='mac-6-codex', cwd='/mac/aesonaOS-7', agent_status='done', machine='mac', tab_id='w1:t1')
+    owner = dict(agent('mac-6-codex', machine='mac'), cwd='/mac/app-7')
     first = dict(tree(cfg), branch='build/6-work', path='/mac/6-work')
     tickets = Mock(closed=Mock(side_effect=lambda n: n == 6 or closed_second))
     def landed(tree_cfg, worktree, errors=None):
         return 'merged' if worktree['branch'] == 'build/6-work' or landed_second else None
-    with patch.object(E, 'inventory', return_value=([agent], [first, tree(cfg)])), \
+    with patch.object(E, 'inventory', return_value=([owner], [first, tree(cfg)])), \
          patch.object(cleanup, 'retirable', side_effect=landed), patch.object(cleanup, 'APPLY', True), \
          patch.object(cleanup, 'archive_tail') as archive:
-        assert cleanup.close_tabs(cfg, tickets)[0] == []
+        assert cleanup.retire_agents(cfg, tickets)[0] == []
         archive.assert_not_called()
 
 
 def test_cleanup_multi_ticket_archive_covers_every_owned_ticket(cfg):
-    agent = dict(name='mac-6-codex', cwd='/mac/aesonaOS-7', agent_status='done', machine='mac', tab_id='w1:t1')
+    owner = dict(agent('mac-6-codex', machine='mac'), cwd='/mac/app-7')
     first = dict(tree(cfg), branch='build/6-work', path='/mac/6-work')
     tickets = Mock(closed=Mock(return_value=True))
-    with patch.object(E, 'inventory', return_value=([agent], [first, tree(cfg)])), \
+    with patch.object(E, 'inventory', return_value=([owner], [first, tree(cfg)])), \
          patch.object(cleanup, 'retirable', return_value='merged'), patch.object(cleanup, 'APPLY', True), \
          patch.object(cleanup, 'archive_tail', return_value=Path('/saved')) as archive, \
-         patch.object(E, 'agents', return_value=[agent]), patch.object(E, 'run', return_value=Mock(returncode=0)):
-        assert len(cleanup.close_tabs(cfg, tickets)[0]) == 1
+         patch.object(E, 'agents', return_value=[owner]), patch.object(E, 'run', return_value=Mock(returncode=0)):
+        assert len(cleanup.retire_agents(cfg, tickets)[0]) == 1
     assert [call.args[1] for call in archive.call_args_list] == [6, 7]
 
 
-def test_mac_archive_then_close_then_remove(cfg):
-    agent = dict(name='mac-7-codex', agent_status='done', machine='mac', tab_id='w1:t1')
+def test_mac_archive_then_kill_then_rm_then_remove(cfg):
+    done = agent('mac-7-codex', machine='mac')
     tickets = Mock(closed=Mock(return_value=True))
     events = []
     def run(*args, **kwargs):
         events.append(args)
-        if 'close' in args:
+        if 'kill' in args:
             assert list((cfg['_root'] / 'tickets/7').glob('report-mac-7-codex.md'))
         return Mock(returncode=0, stdout='stable tail')
-    with patch.object(E, 'inventory', side_effect=[([agent], [tree(cfg)]), ([], [tree(cfg)])]), \
-         patch.object(E, 'agents', return_value=[agent]), patch.object(cleanup, 'retirable', return_value='PR merged'), \
+    with patch.object(E, 'inventory', side_effect=[([done], [tree(cfg)]), ([], [tree(cfg)])]), \
+         patch.object(E, 'agents', return_value=[done]), patch.object(cleanup, 'retirable', return_value='PR merged'), \
+         patch.object(E, 'terminals', return_value=[]), \
          patch.object(cleanup, 'APPLY', True), patch.object(cleanup.time, 'sleep'), patch.object(E, 'run', side_effect=run):
-        assert len(cleanup.close_tabs(cfg, tickets)[0]) == 1
+        assert len(cleanup.retire_agents(cfg, tickets)[0]) == 1
         assert len(cleanup.remove_worktrees(cfg, tickets)[0]) == 1
-    close = next(e for e in events if 'close' in e)
-    remove = next(e for e in events if 'remove' in e)
-    assert close[:3] == remove[:3] == ('herdr', '--machine', 'mac')
-    assert '--workspace' in remove
+    assert events[0] == events[1] == ('hc', 'read', 'mac/t1', '--lines', '40')
+    assert events[-3:-1] == [('hc', 'kill', 'mac/t1'), ('hc', 'rm', 'mac/t1')]
+    assert events[-1][:2] == ('ssh', '-n') and 'git worktree remove /mac/tree' in events[-1][-1]
+
+
+def test_exited_agent_is_removed_without_kill(cfg):
+    gone = agent('mac-7-codex', 'exited', 'mac')
+    with patch.object(E, 'inventory', return_value=([gone], [tree(cfg)])), patch.object(E, 'agents', return_value=[gone]), \
+         patch.object(cleanup, 'retirable', return_value='merged'), patch.object(cleanup, 'APPLY', True), \
+         patch.object(cleanup, 'archive_tail', return_value=Path('/saved')), \
+         patch.object(E, 'run', return_value=Mock(returncode=0)) as run:
+        assert len(cleanup.retire_agents(cfg, Mock(closed=Mock(return_value=True)))[0]) == 1
+    assert [c.args for c in run.call_args_list] == [('hc', 'rm', 'mac/t1')]
+
+
+@pytest.mark.parametrize('cwd', ['/mac/tree', '/mac/tree/sub'])
+def test_live_terminal_inside_worktree_keeps_it(cfg, cwd):
+    with patch.object(E, 'inventory', return_value=([], [tree(cfg)])), patch.object(cleanup, 'APPLY', True), \
+         patch.object(E, 'terminals', side_effect=lambda m: [{'cwd': cwd}] if m == 'mac' else []), \
+         patch.object(cleanup, 'retirable', return_value='merged'):
+        removed, kept = cleanup.remove_worktrees(cfg, Mock(closed=Mock(return_value=True)))
+    assert removed == [] and kept[0][1] == 'a terminal is open inside it'
 
 
 @pytest.mark.parametrize('failure', ['fetch', 'dirty', 'status'])
@@ -609,7 +738,7 @@ def test_remote_git_checks_fail_closed(cfg, failure):
 
 def test_unknown_remote_ownership_prevents_any_cleanup(cfg):
     with patch.object(E, 'inventory', side_effect=E.Refused('mac unknown')), pytest.raises(E.Refused):
-        cleanup.close_tabs(cfg, Mock())
+        cleanup.retire_agents(cfg, Mock())
 
 
 def test_landed_squash_tip_and_ancestry_on_mac(cfg):
@@ -639,23 +768,24 @@ def test_blocked_ticket_is_not_dispatched(cfg):
         D.launch(cfg, 7, 'app', 'work')
 
 
-def test_scp_failure_never_submits_prompt(cfg):
+def test_refused_send_is_never_retried(cfg):
     path = cfg['_root'] / 'prompt.md'
     path.write_text('Resume measured work.')
-    with patch.object(E, 'machine_call', return_value='') as remote, \
-         patch.object(E, 'call', side_effect=E.Refused('copy failed')), pytest.raises(E.Refused):
+    with patch.object(E, 'run', return_value=Mock(returncode=1, stderr='terminal is blocked')) as run, \
+         pytest.raises(E.Refused, match='blocked'):
         D.send_file(cfg, 'mac', 'mac-7-codex', path)
-    assert remote.call_count == 1  # mkdir only, never prompt
+    assert run.call_count == 1
 
 
 def test_wrong_created_head_never_starts_agent(cfg):
     tracker = launch_fakes(cfg)
     with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=([], [])), \
-         patch.object(frontier, 'Tracker', return_value=tracker), patch.object(E, 'worktrees', return_value=[tree(cfg)]), \
-         patch.object(E, 'machine_call', side_effect=['', 'expected', 'wrong']), patch.object(E, 'call', return_value='{}') as call, \
+         patch.object(frontier, 'Tracker', return_value=tracker), \
+         patch.object(E, 'worktrees', return_value=[dict(tree(cfg), path=MAC_TREE)]), \
+         patch.object(E, 'machine_call', side_effect=['', 'expected', '', 'wrong']), patch.object(E, 'call') as call, \
          pytest.raises(E.Refused, match='not at fetched base'):
         D.launch(cfg, 7, 'app', 'work')
-    assert call.call_count == 1
+    call.assert_not_called()
 
 
 def test_unstable_tail_never_closes(cfg):

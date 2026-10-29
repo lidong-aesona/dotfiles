@@ -149,14 +149,14 @@ class SharedSettingsTests(unittest.TestCase):
         self.assertEqual(merged["hooks"]["Stop"], local_stop)
         self.assertEqual(merged["hooks"]["SessionStart"][0], local_start)
         self.assertEqual(len(merged["hooks"]["SessionStart"]), 2)
-        self.assertEqual(merged["autoCompactWindow"], 300000)
+        self.assertEqual(merged["autoCompactWindow"], json.loads(SHARED.read_text())["autoCompactWindow"])
         self.assertEqual(self.merge(merged), merged)
 
     def test_new_machine_gets_shared_settings_and_hook(self):
         merged = self.merge({})
         shared = json.loads(SHARED.read_text())
         self.assertEqual(merged["hooks"]["SessionStart"], shared["hooks"]["SessionStart"])
-        self.assertEqual(merged["autoCompactWindow"], 300000)
+        self.assertEqual(merged["autoCompactWindow"], json.loads(SHARED.read_text())["autoCompactWindow"])
         self.assertNotIn("autoMode", merged)
         self.assertNotIn("permissions", merged)
 

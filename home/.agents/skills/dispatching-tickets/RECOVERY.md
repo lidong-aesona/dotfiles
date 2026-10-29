@@ -17,15 +17,15 @@ Use the frontier's `agent_machines` and `worktree_machines` to locate existing w
 python3 ~/.agents/skills/dispatching-tickets/scripts/dispatch.py <estate> <n> --read <name>
 ```
 
-It reads with `herdr --machine mac agent read` and reports a candidate crashed/exhausted/stopped/review classification with the tail. Inspect the text and live status: a marker in old scrollback is not a new failure. Unreadable tails refuse recovery. Measure Mac git state through `ssh -n herdr-mac` with a quoted `zsh -lic` command in the actual worktree.
+It reads with `hc read mac/<name>` and reports a candidate crashed/exhausted/stopped/review classification with the tail. Inspect the text and live status: a marker in old scrollback is not a new failure. Unreadable tails refuse recovery. Measure Mac git state through `ssh -n herdr-mac` with a quoted `zsh -lic` command in the actual worktree.
 
-Deliver every Mac resume/handover via a copied file, not inline SSH text:
+Deliver every Mac resume/handover from a local file, never as inline SSH text:
 
 ```
 python3 ~/.agents/skills/dispatching-tickets/scripts/dispatch.py <estate> <n> --send <name> <local-prompt-file>
 ```
 
-For swaps below scope every Herdr command with `--machine mac`, use remote paths and IDs, keep the `mac-<n>-codex` identity, and inject the configured remote skill path. Archive before closing the old tab. Replacement profile/model changes still require the estate routing decision; exhaustion never silently substitutes a VM worker. If the Mac is unreadable, leave it unknown/busy and follow MACHINES.md's connectivity fallback.
+For swaps below, address Mac agents as `mac/<name>`, start with `hc run --on mac`, use remote paths, keep the `mac-<n>-codex` identity, and inject the configured remote skill path through `zsh -lic` (DISPATCH.md, Mac dispatch). Archive before removing the old agent. Replacement profile/model changes still require the estate routing decision; exhaustion never silently substitutes a VM worker. If the Mac is unreadable, leave it unknown/busy and follow MACHINES.md's connectivity fallback.
 
 ## Resume a crashed agent
 
@@ -37,7 +37,7 @@ For swaps below scope every Herdr command with `--machine mac`, use remote paths
    - Run any long transfer or job detached, with a log, and poll it, so a dropped turn costs a poll rather than the job.
    - The head's traps that are easiest to get backwards, restated: this agent was interrupted mid-thought.
    - Your goal is still to close the ticket.
-3. **Submit** locally with `herdr agent prompt <name> "$(cat <estate>/tickets/<n>/resume-<k>.md)"`, or use `dispatch.py --send` as above for the Mac, then confirm from the tail that it is working.
+3. **Submit** locally with `hc send <name> "$(cat <estate>/tickets/<n>/resume-<k>.md)"`, or use `dispatch.py --send` as above for the Mac, then confirm from the tail that it is working.
 
 An agent that crashes repeatedly is still resumed; the markers point at the provider, not the work. A resume refused for quota is exhaustion.
 
@@ -55,10 +55,10 @@ When the provider resets, clear `exhausted_until`. Live agents stay on the profi
 
 For an exhausted agent, an escalation, and an `orphaned` ticket whose agent is already gone. The new agent runs on the profile `route.py` chooses for the ticket's `Type` (an escalation names its profile; an estate with no `[routing]` uses `active`), in the existing worktree, with the work on disk intact. Update the `Profile:` line in `head.md` to match.
 
-1. **Archive** the old agent's tail when it still exists, the last record of its reasoning: `herdr agent read <name> --source recent-unwrapped --lines 400 > <estate>/tickets/<n>/tail-<name>.txt`. Also read any `report-*` or `tail-*` already archived there.
+1. **Archive** the old agent's tail when it still exists, the last record of its reasoning: `hc read <name> --lines 400 > <estate>/tickets/<n>/tail-<name>.txt`. Also read any `report-*` or `tail-*` already archived there.
 2. **Measure what it left**, read-only, in every worktree the ticket has: path, branch, base commit, `git status --short`, commits ahead of base, any pushed branch or open pull request. From the tail: changes made outside git (resources created, with their ids), approvals it was waiting on, questions it had asked.
 3. **Write** `<estate>/tickets/<n>/handover.md` from that measurement, never from the old agent's plan:
-   - You are taking over #<n> from an agent that stopped mid-task (say why: provider quota, a closed tab, an escalation and its evidence). Its reasoning is gone; its work on disk is not. Read the worktree before anything else.
+   - You are taking over #<n> from an agent that stopped mid-task (say why: provider quota, a closed terminal, an escalation and its evidence). Its reasoning is gone; its work on disk is not. Read the worktree before anything else.
    - The worktree path, branch and base commit, and the `git status` output verbatim.
    - Read every diff and decide whether you agree before building on it: you are responsible for what you land. Commit early once you agree.
    - Changes already made outside git, with ids.
@@ -68,10 +68,11 @@ For an exhausted agent, an escalation, and an `orphaned` ticket whose agent is a
 5. **Swap the agent**, keeping exactly one agent in the worktree:
 
    ```
-   herdr tab create --workspace <workspace id> --cwd <worktree path> --label "<n> <kind>" --no-focus
-   herdr tab close <old agent's tab id>        # when the old agent still exists
-   herdr agent start <agent_prefix><n><suffix> --kind <kind> --pane <new pane> --timeout <timeout_ms> -- <args from route.py>
-   herdr agent prompt <new name> "$(cat <estate>/tickets/<n>/handover.prompt.md)"
+   hc kill <old name> && hc rm <old name>      # when the old agent still exists
+   hc run --bg --name <agent_prefix><n><suffix> --cwd <worktree path> --no-parent --outlive-parent \
+     --label herdr.space=ticket-<n> -- <kind> <args from route.py>
+   hc wait <new name> --timeout <timeout_ms / 1000>
+   hc send <new name> "$(cat <estate>/tickets/<n>/handover.prompt.md)"
    ```
 
-   The old tab closes before the new agent starts: a dead agent left beside its replacement is one mistaken resume away from two agents writing one worktree. Should the start then fail, the next tick sees the ticket as `orphaned` and hands it over again. A worktree with no open workspace is reopened with `herdr worktree open`. Apply DISPATCH.md's agent-kind notes to the start.
+   The old agent is removed before the new one starts: a dead agent left beside its replacement is one mistaken resume away from two agents writing one worktree. Should the start then fail, the next tick sees the ticket as `orphaned` and hands it over again. Confirm `hc get --json <new name>` shows `status.state` `idle` before the send. Apply DISPATCH.md's agent-kind notes to the start.

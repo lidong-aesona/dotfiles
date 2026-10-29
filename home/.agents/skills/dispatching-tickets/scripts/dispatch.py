@@ -10,8 +10,8 @@ Never retries mutations or resets an existing worktree.
 """
 import json
 import re
+import shlex
 import sys
-import uuid
 from pathlib import Path
 
 import estate as E
@@ -49,15 +49,24 @@ def ticket_inventory(cfg, n, machine=None):
     return listed, trees, errors
 
 
+# Linux caps one argument at 128 KiB; hc carries the text, never a shell command line.
+MAX_PROMPT = 100_000
+
+
+def agent_argv(profile, skill):
+    """The agent's command, run through a login shell so it finds what a person's shell finds."""
+    command = [profile['kind'], *profile['args'], profile.get('skill_flag', '--append-system-prompt'), skill]
+    return ['zsh', '-lic', 'exec ' + shlex.join(command)]
+
+
 def send_file(cfg, machine, name, path):
-    """Copy bytes first. Only short paths/IDs cross the SSH command line."""
-    settings = cfg['machines'][machine]
+    """Paste a prompt file into an agent. The text travels inside hc, never through ssh."""
     path = Path(path)
     if not path.is_file() or not path.read_text().strip():
         raise E.Refused(f'empty/missing prompt: {path}')
     n = E.ticket_of_agent(cfg, name)
     if n is None:
-        # Unnamed Herdr agents are addressed by explicit pane ID, with ownership
+        # Unnamed agents are addressed by terminal ID, with ownership
         # resolved by inventory before this helper is reached.
         errors = {}
         listed, _ = E.inventory(cfg, errors=errors)
@@ -73,21 +82,15 @@ def send_file(cfg, machine, name, path):
         wrapped = path.with_name(f'{path.stem}.mac-delivery.md')
         wrapped.write_text(preamble + path.read_text())
         path = wrapped
-    remote = f"{settings['home']}/.herdr/dispatch-prompts/{uuid.uuid4()}.md"
-    E.machine_call(cfg, machine, 'mkdir', '-p', str(Path(remote).parent))
-    E.call('scp', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
-           str(path.resolve()), f"{settings['ssh']}:{remote}", tries=1)
-    # Read the file on the Mac, never splice its contents into an SSH command.
-    script = ('import pathlib,subprocess,sys; '
-              'subprocess.run(["herdr","--session",sys.argv[3],"agent","prompt",'
-              'sys.argv[1],pathlib.Path(sys.argv[2]).read_text()],check=True)')
-    E.machine_call(cfg, machine, 'python3', '-c', script, name, remote,
-                   settings.get('session', 'default'))
+    text = path.read_text()
+    if len(text.encode()) > MAX_PROMPT:
+        raise E.Refused(f'prompt is over {MAX_PROMPT} bytes: {path}')
+    # A blocked agent refuses the paste: answering its dialog is a person's call.
+    E.call(*E.hc('send', E.address(machine, name), text), tries=1)
 
 
 def read_tail(cfg, machine, name):
-    text = E.call(*E.herdr(machine), 'agent', 'read', name,
-                  '--source', 'recent-unwrapped', '--lines', '150')
+    text = E.call(*E.hc('read', E.address(machine, name), '--lines', '150'))
     if not text.strip():
         raise E.Refused(f'{machine}:{name} tail is unreadable')
     profile = cfg['agents']['profiles'][cfg['machines'][machine]['profile']]
@@ -127,30 +130,32 @@ def launch(cfg, n, repo_name, slug):
     prompt = P.assemble(cfg, n, ['--profile', profile_name, '--machine', machine])
     name = f"{settings['agent_prefix']}{n}-codex"
     branch = f'build/{n}-{slug}'
+    path = f"{settings['home']}/.herdr/worktrees/{repo['name']}/build-{n}-{slug}"
+    # Every agent of one ticket shares one space in the app.
+    space = f'ticket-{n}'
     E.machine_call(cfg, machine, 'git', 'fetch', 'origin', cwd=repo['path'])
     base = E.machine_call(cfg, machine, 'git', 'rev-parse', f"origin/{repo['base']}", cwd=repo['path']).strip()
-    E.call(*E.herdr(machine), 'worktree', 'create', '--cwd', repo['path'], '--branch', branch,
-           '--base', base, '--label', f'{n} {slug}', '--no-focus', '--trust-repository', tries=1)
-    matches = [w for w in E.worktrees(repo, machine) if w.get('branch') == branch]
-    if len(matches) != 1 or not matches[0].get('open_workspace_id'):
-        raise E.Refused('created worktree/workspace unreadable; next tick must recover')
+    E.machine_call(cfg, machine, 'git', 'worktree', 'add', '-b', branch, path, base, cwd=repo['path'])
+    matches = [w for w in E.worktrees(cfg, repo, machine) if w.get('branch') == branch]
+    if len(matches) != 1 or matches[0]['path'] != path:
+        raise E.Refused('created worktree unreadable; next tick must recover')
     tree = matches[0]
     head = E.machine_call(cfg, machine, 'git', 'rev-parse', 'HEAD', cwd=tree['path']).strip()
     if not base or head != base:
         raise E.Refused('created worktree is not at fetched base; do not start or reset it')
-    panes = E.parse(E.call(*E.herdr(machine), 'pane', 'list', '--workspace', tree['open_workspace_id']),
-                    'result', 'panes')
-    if not isinstance(panes, list) or len(panes) != 1 or panes[0].get('agent'):
-        raise E.Refused('new workspace has no unique empty pane')
-    pane = panes[0]['pane_id']
     head_path = cfg['_root'] / 'tickets' / str(n) / 'head.md'
     with head_path.open('a') as f:
-        f.write(f'\nMachine: {machine}; session: {settings.get("session", "default")}; '
-                f'agent: {name}; workspace: {tree["open_workspace_id"]}; pane: {pane}; '
+        f.write(f'\nMachine: {machine}; agent: {name}; space: {space}; '
                 f'worktree: {tree["path"]}; branch: {branch}; base: {base}.\n')
-    E.call(*E.herdr(machine), 'agent', 'start', name, '--kind', profile['kind'], '--pane', pane,
-           '--timeout', str(profile.get('timeout_ms', 180000)), '--', *profile['args'],
-           '--append-system-prompt', settings['skill'], tries=1)
+    started = E.parse(E.call(*E.hc('run', '--on', machine, '--bg', '--json', '--name', name,
+                                   '--cwd', tree['path'], '--no-parent', '--outlive-parent',
+                                   '--label', f'herdr.space={space}', '--',
+                                   *agent_argv(profile, settings['skill'])), tries=1))
+    if not isinstance(started, dict) or started.get('state') != 'live':
+        raise E.Refused(f'{name} did not start: {started}')
+    # The first prompt goes in only once the agent is ready.
+    if not E.wait_ready(E.address(machine, name), max(1, profile.get('timeout_ms', 180000) // 1000)):
+        raise E.Refused(f'{name} is not ready for its prompt; read it, do not resend')
     send_file(cfg, machine, name, prompt)
     return read_tail(cfg, machine, name)
 

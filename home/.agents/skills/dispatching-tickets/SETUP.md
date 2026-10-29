@@ -6,7 +6,7 @@ Build the estate directory with the user. The first tick runs when the user star
 
 - **The tracker**: its labels (`gh label list --repo <tracker>`), and the tracker repository's `docs/agents/triage-labels.md` when it exists.
 - **How blockers are written**: a few issue bodies, and a native link or two (`gh api repos/<tracker>/issues/<n>/dependencies/blocked_by`). `frontier.py` reads native links, a `Blocked by` heading's bullets, and `Blocked by: #12, #14` lines. It treats a bullet whose leading word is None or Nothing as no blocker, a struck-through first reference as resolved, and every other reference by its live state. A tracker that declares blockers any other way reads as unblocked until `frontier.py` is taught that way, so settle this before the first tick.
-- **The repositories** agents will write to: primary checkout path, the base branch new work starts from, the branches work lands in, and long-lived worktrees to keep (`herdr worktree list --cwd <path>`).
+- **The repositories** agents will write to: primary checkout path, the base branch new work starts from, the branches work lands in, and long-lived worktrees to keep (`git -C <path> worktree list`).
 - **Profiles and routing**: which subscriptions the user has, which harnesses reach each one on this machine (`pi auth`, `claude`, `codex`), and the model and effort for each profile. Start from the template's `[routing]` table and confirm each type's profiles with the user. Read [ROUTING.md](ROUTING.md) first.
 - **Quota readings**: run `scripts/quota_read.py` once and fix every provider it reports unreadable (a missing login is a `claude` or `pi` session to open). Providers it has no reader for are read by hand: ask the user where, write that into the `quota.toml` header, and take one reading before the first tick.
 - **Existing material**: a runbook, prompts or scratchpad from a hand-run fleet is the best source for the blocks. Carry every rule across; drop the history.
@@ -25,7 +25,7 @@ Show the drafts. Confirm the labels, the stop rules in `closing-mandate.md`, the
 
 ## 5. Check
 
-Run `frontier.py <estate>` without `--record`, `cleanup.py <estate>` without `--apply`, and `route.py <estate> <type>` for every type. Setup is done when both run cleanly and the user agrees with what they report. An existing fleet's agents are invisible to both until their names match `<agent_prefix><n>`; rename them with `herdr agent rename`.
+Run `frontier.py <estate>` without `--record`, `cleanup.py <estate>` without `--apply`, and `route.py <estate> <type>` for every type. Setup is done when both run cleanly and the user agrees with what they report. An existing fleet's agents are invisible to both until their names match `<agent_prefix><n>` or their cwd is a `build-<n>-<slug>` worktree. hc cannot rename a terminal: start new agents with `--name`, and keep the operator and other non-ticket agents out of the loop with `hc label <terminal> dispatch.ignore=1` or `[watcher] ignore`.
 
 Then hand the user the command that starts ticking:
 

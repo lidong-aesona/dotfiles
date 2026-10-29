@@ -96,9 +96,9 @@ def prefix_pattern(cfg):
     return "|".join(sorted((re.escape(p) for _, p in trackers(cfg)), key=len, reverse=True))
 
 
-def run(*args, cwd=None):
+def run(*args, cwd=None, timeout=120):
     try:
-        return subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=120)
+        return subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise Refused(f"{args[0]} unreadable: {e}") from e
 
@@ -137,8 +137,14 @@ def parse(raw, *keys):
         raise Refused(f"unreadable reply ({e}): {raw[:200]!r}")
 
 
-def herdr(machine=""):
-    return ["herdr"] + (["--machine", machine] if machine else [])
+def hc(*args):
+    """An hc command. hc on this host reaches every attached machine by address."""
+    return ["hc", *args]
+
+
+def address(machine, terminal):
+    """The hc address of a terminal: bare locally, `<machine>/<terminal>` elsewhere."""
+    return f"{machine}/{terminal}" if machine and "/" not in terminal else terminal
 
 
 def machines(cfg):
@@ -174,13 +180,23 @@ def machine_repos(cfg, machine=""):
     return repos
 
 
-def machine_run(cfg, machine, *args, cwd=None):
+def machine_argv(cfg, machine, *args, cwd=None):
     if not machine:
-        return run(*args, cwd=cwd)
+        return list(args)
     settings = cfg['machines'][machine]
     command = (f'cd -- {shlex.quote(str(cwd))} && ' if cwd else '') + shlex.join(args)
-    return run('ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
-               settings['ssh'], 'zsh -lic ' + shlex.quote(command))
+    return ['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
+            settings['ssh'], 'zsh -lic ' + shlex.quote(command)]
+
+
+def machine_run(cfg, machine, *args, cwd=None):
+    # Locally cwd goes to the process; remotely it is a `cd` inside the ssh command.
+    return run(*machine_argv(cfg, machine, *args, cwd=cwd), cwd=None if machine else cwd)
+
+
+def machine_read(cfg, machine, *args):
+    """A read-only command on a machine, retried like any other read."""
+    return call(*machine_argv(cfg, machine, *args))
 
 
 def machine_call(cfg, machine, *args, cwd=None):
@@ -202,7 +218,7 @@ def inventory(cfg, errors=None):
         try:
             listed.extend(dict(a, machine=machine) for a in agents(machine))
             for repo in machine_repos(cfg, machine):
-                trees.extend(dict(w, machine=machine, repo=repo) for w in worktrees(repo, machine))
+                trees.extend(dict(w, machine=machine, repo=repo) for w in worktrees(cfg, repo, machine))
         except Refused as e:
             if errors is None:
                 raise Refused(f'{machine or "local"} ownership unknown/busy: {e}') from e
@@ -259,24 +275,88 @@ def unknown_ownership(cfg, errors, listed, trees, previous):
     return {machine: sorted(numbers, key=order) for machine, numbers in unknown.items()}
 
 
+def _listing(machine, all_=False):
+    """hc's terminals on one machine. Raises unless that machine is attached and connected."""
+    raw = call(*hc("ls", "--json", *(["--all"] if all_ else [])))
+    listed = parse(raw, "terminals")
+    attached = parse(raw, "machines")
+    if machine and not any(isinstance(m, dict) and m.get("name") == machine and m.get("state") == "connected"
+                           for m in attached if isinstance(attached, list)):
+        raise Refused(f"{machine} is not connected to hc")
+    if not isinstance(listed, list) or any(not isinstance(t, dict) or
+            not isinstance(t.get("address"), str) or not t["address"].strip() or
+            not isinstance(t.get("state"), str) or
+            not (isinstance(t.get("cwd"), str) and t["cwd"].startswith("/"))
+            for t in listed):
+        raise Refused(f"{machine or 'local'} terminal list is unreadable")
+    here = [t for t in listed if (t["address"].startswith(f"{machine}/") if machine else "/" not in t["address"])]
+    return [dict(t, terminal=t["address"].split("/", 1)[-1]) for t in here]
+
+
+def terminals(machine=""):
+    """Every live terminal on one machine, agent or not: each cwd occupies its worktree."""
+    return [t for t in _listing(machine) if t["state"] == "live"]
+
+
 def agents(machine=""):
-    """Every agent herdr knows about. Raises when the list cannot be read.
+    """Every agent on one machine. Raises when the list cannot be read.
 
     Unknown agent state must never read as "nothing is running": to the frontier that
     means every ticket is undispatched and gets a second agent, and to cleanup it means
     every worktree is unguarded.
+
+    An agent is a live terminal hc reports a status for, or any named terminal: dispatch
+    names every agent it starts. A named agent whose process ended stays listed as
+    `exited`, so it keeps owning its ticket until cleanup removes it. Unnamed agents
+    (started by hand) are identified by address and owned through their cwd.
     """
-    listed = parse(call(*herdr(machine), "agent", "list"), "result", "agents")
-    if not isinstance(listed, list) or any(not isinstance(a, dict) or
-            not isinstance(a.get('agent_status'), str) or
-            not ((isinstance(a.get('name'), str) and a['name'].strip()) or
-                 (isinstance(a.get('pane_id'), str) and a['pane_id'].strip() and
-                  isinstance(a.get('cwd'), str) and a['cwd'].startswith('/')))
-            for a in listed):
-        raise Refused(f"{machine or 'local'} agent list is unreadable")
-    # Herdr also lists unnamed interactive agents. Their explicit pane and cwd
-    # identify ownership; do not turn one into an invisible owner or target focus.
-    return [dict(a, name=a.get('name') or a['pane_id']) for a in listed]
+    listed = []
+    for t in _listing(machine, all_=True):
+        named = isinstance(t.get("name"), str) and t["name"].strip()
+        live = t["state"] == "live"
+        if not (named or (live and isinstance(t.get("status"), str))):
+            continue
+        status = (t.get("status") or "unknown") if live else "exited"
+        listed.append(dict(t, name=t.get("name") or t["terminal"], agent_status=status))
+    return listed
+
+
+def wait_ready(address, seconds):
+    """Wait up to `seconds` for a fresh agent's first idle; return whether it is idle.
+
+    hc counts an agent that has not reported yet as working, so the wait ends when it
+    first goes idle. A start dialog leaves it working or blocked, and then it is not ready.
+    """
+    run(*hc("wait", address, "--timeout", str(seconds)), timeout=seconds + 30)
+    status = parse(call(*hc("get", "--json", address)), "status")
+    return isinstance(status, dict) and status.get("state") == "idle"
+
+
+def stop_mark(agent):
+    """When the agent's status last changed: hc's `status_ms`, None once it exited.
+
+    hc 0.1.13 keeps `turn` at 0, so it cannot tell two idle stops apart. A turn that
+    starts and ends between two polls still moves `status_ms`, and `hc ls` omits it.
+    """
+    if agent["agent_status"] == "exited":
+        return None
+    mark = parse(call(*hc("get", "--json", agent["address"])), "status_ms")
+    if not isinstance(mark, int):
+        raise Refused(f"{agent['address']} status time is unreadable: {mark!r}")
+    return mark
+
+
+def ignored(watcher):
+    """Watcher-ignored agents, by name from `[watcher] ignore` or by the `dispatch.ignore=1` label.
+
+    The label covers terminals hc cannot rename, such as an operator started without a name.
+    """
+    labelled = parse(call(*hc("ls", "--json", "--all", "--label", "dispatch.ignore=1")), "terminals")
+    if not isinstance(labelled, list) or any(not isinstance(t, dict) or not isinstance(t.get("address"), str)
+                                             for t in labelled):
+        raise Refused("ignored terminal list is unreadable")
+    names, addresses = set(watcher.get("ignore", [])), {t["address"] for t in labelled}
+    return lambda a: a["name"] in names or a["address"] in addresses
 
 
 def ticket_agents(cfg, listed, n):
@@ -307,7 +387,7 @@ def ticket_of_worktree(cfg, branch, path):
     """The ticket key from the branch (`build/107-three-stores`, `build/r235-setup`), else the
     directory (`130-no-standing-admin`). Older branches carry the number only in the directory,
     and both must resolve or that half of the tree is invisible to the loop. A prefixed key counts
-    only in the names dispatch creates (`build/` branch, herdr's `build-` directory): an
+    only in the names dispatch creates (`build/` branch, `build-` directory): an
     unrelated `r899-af181e83` worktree is not research ticket 899."""
     prefixed = prefix_pattern(cfg)
     for pattern, text in ((rf"^build/({prefixed})(\d+)-", branch),
@@ -320,15 +400,20 @@ def ticket_of_worktree(cfg, branch, path):
     return None
 
 
-def worktrees(repo, machine=""):
-    """Linked, attached worktrees of one estate repository, minus its keep list."""
-    listed = parse(call(*herdr(machine), "worktree", "list", "--cwd", repo["path"]), "result", "worktrees")
-    if not isinstance(listed, list) or any(not isinstance(w, dict) or
-            not isinstance(w.get('path'), str) or type(w.get('is_linked_worktree')) is not bool or
-            type(w.get('is_detached')) is not bool or
-            (not w['is_detached'] and not isinstance(w.get('branch'), str))
-            for w in listed):
-        raise Refused(f"{machine or 'local'} worktree list is unreadable")
-    # Detached linked trees also carry ownership, even though cleanup cannot land them.
-    return [w for w in listed if w['is_linked_worktree']
-            and Path(w['path']).name not in repo.get('keep', [])]
+def worktrees(cfg, repo, machine=""):
+    """Linked worktrees of one estate repository, minus its keep list.
+
+    Read from `git worktree list --porcelain` on the machine that owns the checkout.
+    """
+    raw = machine_read(cfg, machine, "git", "-C", repo["path"], "worktree", "list", "--porcelain")
+    listed = []
+    for block in raw.strip().split("\n\n"):
+        fields = dict((line.split(" ", 1) + [""])[:2] for line in block.splitlines() if line)
+        if "worktree" not in fields or not fields["worktree"].startswith("/"):
+            raise Refused(f"{machine or 'local'} worktree list is unreadable: {block[:200]!r}")
+        branch = fields.get("branch", "")
+        listed.append({"path": fields["worktree"], "is_detached": "detached" in fields,
+                       "branch": branch.removeprefix("refs/heads/") if branch else None})
+    # The first entry is the main checkout. Detached linked trees also carry ownership,
+    # even though cleanup cannot land them.
+    return [w for w in listed[1:] if Path(w["path"]).name not in repo.get("keep", [])]

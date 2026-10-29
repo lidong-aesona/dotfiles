@@ -19,7 +19,7 @@ Each ticket gets an `action`:
   surface   carries the surface label: a human's to do, never an agent's
   dispatch  carries the dispatch label, has no agent and no worktree
   orphaned  carries the dispatch label and has no agent, but a worktree carries its number:
-            an agent died, its tab closed, or a start failed. Its work is on disk.
+            an agent died, its terminal was removed, or a start failed. Its work is on disk.
   unknown   routed to, or previously owned on, an unreadable machine: no action
   hold      an explicit estate holds entry (overrides labels, agents and worktrees),
             or anything else (needs-triage, unlabeled, both labels at once)

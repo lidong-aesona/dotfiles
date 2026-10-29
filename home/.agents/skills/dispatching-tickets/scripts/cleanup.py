@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Retire the tabs and worktrees of finished ticket work.
+"""Retire the agents and worktrees of finished ticket work.
 
     python3 cleanup.py <estate-dir>            # report only
-    python3 cleanup.py <estate-dir> --apply    # archive reports, close tabs, remove worktrees
+    python3 cleanup.py <estate-dir> --apply    # archive reports, remove agents, remove worktrees
 
 Run it AFTER the tick's dispatch, never before: a worktree created for an agent that has
 not started yet has nothing protecting it but the agent that is about to exist.
@@ -10,8 +10,8 @@ not started yet has nothing protecting it but the agent that is about to exist.
 A session is finished when its ticket is CLOSED *and* its branch has landed. Anything that
 fails a check is kept and the reason printed. This script never forces.
 
-Tabs go first, then worktrees, because an agent sitting in a worktree's workspace
-protects that worktree until its tab is closed.
+Agents go first, then worktrees, because any terminal whose cwd is inside a worktree
+protects that worktree until it is removed.
 """
 import sys, time
 from datetime import datetime
@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import estate as E
 
 APPLY = "--apply" in sys.argv[2:]
+# A named agent whose process ended is `exited`: nothing runs under it any more.
+FINISHED = ("idle", "done", "exited")
 
 
 class Tickets:
@@ -55,24 +57,23 @@ class Tickets:
         return E.machine_for(cfg, [label['name'] for label in issue['labels']]) if issue else None
 
 
-def archive_tail(cfg, n, name, machine=""):
-    """Save an agent's terminal before its tab closes. Returns the path, or None.
+def archive_tail(cfg, n, name, machine="", terminal=None):
+    """Save an agent's terminal before it is removed. Returns the path, or None.
 
     The terminal summary carries findings the ticket's closing comment does not, and
-    closing the tab destroys it. The tail is read twice a few seconds apart: agent status
-    lags, and an agent listed `done` may still be writing.
+    removing the terminal destroys it. The tail is read twice a few seconds apart: agent
+    status lags, and an agent listed `done` may still be writing.
     """
     def read(lines):
-        r = E.run(*E.herdr(machine), "agent", "read", name, "--source", "recent-unwrapped",
-                  "--lines", str(lines))
+        r = E.run(*E.hc("read", E.address(machine, terminal or name), "--lines", str(lines)))
         if r.returncode:
             raise E.Refused(f'{machine or "local"} tail read failed: {r.stderr}')
         return r.stdout if r.stdout.strip() else None
     # "Is it still writing?" is asked of a SHALLOW window, and only the archive is deep.
-    # A deep read of an idle pane is not byte-stable: herdr re-renders scrollback, so lines
+    # A deep read of an idle pane was not byte-stable under herdr: it re-rendered scrollback, so lines
     # drift off the top and back on between two reads seconds apart. Comparing 400 lines
     # never matched for any agent with more than a screenful of history, so no report was
-    # archived and no tab closed - and the live agent then kept its worktree too.
+    # archived and no agent removed - and the live agent then kept its worktree too.
     # Measured on the laptop fleet 2026-09-22: 40 lines stable, 150 and 400 not, on both
     # sources. A 40-line window still changes while an agent writes.
     first = read(40)
@@ -113,7 +114,7 @@ def ticket_unknown(cfg, tickets, numbers, errors, listed, trees, previous):
         return True
 
 
-def close_tabs(cfg, tickets):
+def retire_agents(cfg, tickets):
     listed, trees, errors, previous = retirement_inventory(cfg)
     closed, kept = [], []
     for a in listed:
@@ -124,7 +125,7 @@ def close_tabs(cfg, tickets):
         if a['machine'] in errors or ticket_unknown(cfg, tickets, numbers, errors, listed, trees, previous):
             kept.append((name, 'ownership on an unreadable machine is unknown'))
             continue
-        if a.get("agent_status") not in ("idle", "done"):
+        if a.get("agent_status") not in FINISHED:
             continue                                   # working or blocked: never close under it
         if not all(tickets.closed(number) for number in numbers):
             kept.append((name, f'owned tickets {sorted(numbers, key=E.order)} are not all known closed'))
@@ -134,7 +135,7 @@ def close_tabs(cfg, tickets):
         if proven != numbers:
             kept.append((name, 'not every owned ticket has a worktree to prove clean and landed'))
             continue
-        if any(other.get('agent_status') not in ('idle', 'done') and
+        if any(other.get('agent_status') not in FINISHED and
                E.agent_tickets(cfg, other) & numbers for other in listed):
             kept.append((name, 'another agent for this ticket is not finished'))
             continue
@@ -146,7 +147,8 @@ def close_tabs(cfg, tickets):
             closed.append((name, f"tickets {sorted(numbers, key=E.order)} closed, agent {a.get('agent_status')}"))
             continue
         try:
-            reports = [archive_tail(cfg, number, name, a['machine']) for number in sorted(numbers, key=E.order)]
+            reports = [archive_tail(cfg, number, name, a['machine'], a['terminal'])
+                       for number in sorted(numbers, key=E.order)]
         except E.Refused as e:
             machine_failed(errors, a['machine'], e)
             kept.append((name, 'machine failed while archiving'))
@@ -162,22 +164,26 @@ def close_tabs(cfg, tickets):
             machine_failed(errors, a['machine'], e)
             kept.append((name, 'machine failed during agent recheck'))
             continue
-        current = next((x for x in fresh if x.get('name') == name), None)
-        if (not current or current.get('agent_status') not in ('idle', 'done')
-                or current.get('tab_id') != a['tab_id']
+        current = next((x for x in fresh if x['address'] == a['address']), None)
+        if (not current or current.get('agent_status') not in FINISHED
+                or current.get('name') != name
                 or E.agent_tickets(cfg, current) != numbers):
             kept.append((name, 'agent changed after archive'))
             continue
+        target = a['address']
         try:
-            r = E.run(*E.herdr(a['machine']), "tab", "close", a["tab_id"])
+            # kill ends the agent; rm drops the finished terminal and its tab from the app.
+            r = E.run(*E.hc("kill", target)) if current['agent_status'] != 'exited' else None
+            if r is None or r.returncode == 0:
+                r = E.run(*E.hc("rm", target))
         except E.Refused as e:
             machine_failed(errors, a['machine'], e)
-            kept.append((name, 'tab close reply unreadable; recheck next tick'))
+            kept.append((name, 'terminal removal reply unreadable; recheck next tick'))
             continue
         if r.returncode:
-            machine_failed(errors, a['machine'], r.stderr or 'tab close failed')
+            machine_failed(errors, a['machine'], r.stderr or 'terminal removal failed')
         (closed if r.returncode == 0 else kept).append(
-            (name, f"tickets {sorted(numbers, key=E.order)} closed, report at {saved}" if r.returncode == 0 else "tab close failed"))
+            (name, f"tickets {sorted(numbers, key=E.order)} closed, report at {saved}" if r.returncode == 0 else "terminal removal failed"))
     return closed, kept
 
 
@@ -236,19 +242,27 @@ def retirable(cfg, tree, errors=None):
 
 def remove_worktrees(cfg, tickets):
     listed, trees, errors, previous = retirement_inventory(cfg)
-    live_spaces = {(a['machine'], a.get('workspace_id')) for a in listed}
-    # A ticket spanning two repositories has a second worktree with no herdr workspace of
-    # its own, which the workspace check cannot see. Removing one out from under a working
-    # agent destroys uncommitted work. So a ticket number held by ANY agent protects every
-    # worktree carrying that number, in every repository.
+    # Any live terminal inside a worktree, agent or shell, is using it.
+    occupied = {}
+    for machine in E.machines(cfg):
+        if machine in errors:
+            continue
+        try:
+            occupied[machine] = [t['cwd'] for t in E.terminals(machine)]
+        except E.Refused as e:
+            machine_failed(errors, machine, e)
+    # A ticket spanning two repositories has a second worktree no agent sits in, which the
+    # cwd check cannot see. Removing one out from under a working agent destroys
+    # uncommitted work. So a ticket number held by ANY agent protects every worktree
+    # carrying that number, in every repository.
     live_tickets = {n for a in listed for n in E.agent_tickets(cfg, a)}
     removed, kept = [], []
     for w in trees:
         repo, machine = w['repo'], w['machine']
-        path, branch, ws = w['path'], w.get('branch'), w.get('open_workspace_id')
+        path, branch = w['path'], w.get('branch')
         label = f"{machine or 'local'}:{repo['name']}/{Path(path).name}"
-        if ws and (machine, ws) in live_spaces:
-            kept.append((label, 'an agent is live in its workspace'))
+        if any(cwd == path or cwd.startswith(path.rstrip('/') + '/') for cwd in occupied.get(machine, [])):
+            kept.append((label, 'a terminal is open inside it'))
             continue
         n = E.ticket_of_worktree(cfg, branch, path)
         if machine in errors or ticket_unknown(cfg, tickets, {n} if n is not None else set(), errors, listed, trees, previous):
@@ -268,14 +282,7 @@ def remove_worktrees(cfg, tickets):
             removed.append((label, f'#{n} closed, {why}'))
             continue
         try:
-            if ws:
-                ok = E.run(*E.herdr(machine), 'worktree', 'remove', '--workspace', ws,
-                           '--trust-repository').returncode == 0
-            elif machine:
-                kept.append((label, 'no remote workspace ID; manual fallback required'))
-                continue
-            else:
-                ok = E.run('git', 'worktree', 'remove', path, cwd=repo['path']).returncode == 0
+            ok = E.machine_run(cfg, machine, 'git', 'worktree', 'remove', path, cwd=repo['path']).returncode == 0
         except E.Refused as e:
             machine_failed(errors, machine, e)
             kept.append((label, 'removal reply unreadable; recheck next tick'))
@@ -298,13 +305,13 @@ def main():
     cfg = E.load(sys.argv[1])
     tickets = Tickets(cfg["tracker"], cfg)
     try:
-        tabs_closed, tabs_kept = close_tabs(cfg, tickets)
+        agents_removed, agents_kept = retire_agents(cfg, tickets)
         removed, kept = remove_worktrees(cfg, tickets)
     except E.Refused as e:
         # Unknown agent or worktree state must never read as "nothing to protect".
         sys.exit(f"!! {e}; refusing to retire anything further")
-    show("tabs closed" if APPLY else "tabs to close", tabs_closed)
-    show("tabs kept", tabs_kept)
+    show("agents removed" if APPLY else "agents to remove", agents_removed)
+    show("agents kept", agents_kept)
     show("worktrees removed" if APPLY else "worktrees to remove", removed)
     show("worktrees kept", kept)
 
