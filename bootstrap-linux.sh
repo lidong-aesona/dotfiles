@@ -21,7 +21,12 @@ else
 fi
 
 echo "==> symlink this repo to ~/.dotfiles"
-ln -sfn "$DIR" "$HOME/.dotfiles"
+# A real directory at ~/.dotfiles is a checkout: `ln` would plant the link inside it.
+if [[ -d "$HOME/.dotfiles" && ! -L "$HOME/.dotfiles" ]]; then
+  [[ "$(cd "$HOME/.dotfiles" && pwd -P)" == "$DIR" ]] || { echo "$HOME/.dotfiles is another checkout, not $DIR" >&2; exit 1; }
+else
+  ln -sfn "$DIR" "$HOME/.dotfiles"
+fi
 
 echo "==> home-manager switch"
 "$DIR/rebuild.sh"
