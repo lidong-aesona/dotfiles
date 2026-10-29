@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS))
+import estate as E  # noqa: E402
 ALWAYS_RUN = {"dispatch", "orphaned"}
 
 
@@ -48,22 +50,20 @@ def fleet_digest(estate: Path, config: dict) -> tuple[str, set[str]]:
     actions = {str(t.get("action")) for t in frontier["frontier"] + frontier["blocked"]}
     agents = []
     watcher = config.get("watcher", {})
+    skip = E.ignored(watcher)
     for machine in watcher.get("machines", [""]):
-        command = ["herdr"] + (["--machine", machine] if machine else []) + ["agent", "list"]
         try:
-            listed = json.loads(
-                subprocess.run(command, capture_output=True, text=True, timeout=60, check=True).stdout
-            )["result"]["agents"]
-        except (subprocess.SubprocessError, ValueError, KeyError) as error:
+            # The stop mark moves on every stop, so a turn that ran entirely between two
+            # ticks still changes the digest.
+            agents += sorted(
+                (machine, a["name"], a["agent_status"], E.stop_mark(a))
+                for a in E.agents(machine)
+                if not skip(a)
+            )
+        except E.Refused as error:
             if not machine:
                 raise
             agents.append((machine, "unreadable", type(error).__name__, None))
-            continue
-        agents += sorted(
-            (machine, a.get("name"), a.get("agent_status"), a.get("completion_seq"))
-            for a in listed
-            if a.get("name") and a["name"] not in watcher.get("ignore", [])
-        )
     blob = json.dumps(
         [tickets, agents, frontier.get("holds"), frontier.get("freeze"),
          sorted(frontier.get("machine_errors") or {})],

@@ -53,10 +53,9 @@ PY
 }
 # Safe mode keeps subscription OAuth, unlike --bare. No implicit history, memory,
 # project instructions, hooks/plugins or MCP; files are explicitly read by the tick.
-# No inherited agent pane identity: unattended ticks address workers explicitly.
-unset HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID CLAUDECODE
-export HERDR_ENV=1
-export HERDR_SOCKET_PATH="${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}"
+# No inherited terminal identity: a worker started from the tick must not become a child
+# that ends with it. Unattended ticks address workers explicitly.
+unset HC_SCOPE HC_TERMINAL_ID HC_TERMINAL_SOCKET CLAUDECODE
 # On a quota or rate-limit refusal, retry on the next [tick] fallback_profiles entry.
 rc=3  # no usable profile
 quota='429|rate.?limit|usage limit|hit your limit|out of (usage )?credits|insufficient_quota|quota exceeded'

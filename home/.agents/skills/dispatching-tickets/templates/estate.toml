@@ -9,7 +9,7 @@
 tracker = "OWNER/REPO"
 
 # Agent names are <agent_prefix><ticket number><profile suffix>. Give each estate its own
-# prefix when two estates share one herdr session, or their ticket numbers collide.
+# prefix when two estates share one machine, or their ticket numbers collide.
 agent_prefix = "ticket-"
 
 # Seconds between ticks.
@@ -47,11 +47,11 @@ active = "claude-opus"
 fallback = []
 
 # One profile per (harness, model, effort). Every profile carries:
-#   kind        herdr agent kind
+#   kind        the agent command: claude, pi, codex
 #   provider    whose subscription it spends: "anthropic", "openai" or "xai". Reviews never run on
 #               the author's provider, and quota.toml is keyed by it.
 #   suffix      appended to the agent name; unique, and must not start with a digit
-#   timeout_ms  readiness wait for `herdr agent start`
+#   timeout_ms  readiness wait (`hc wait`) after the agent starts
 #   args        arguments after `--`. Multi-line text cannot be passed; pass files by absolute path.
 #   skill_flag  the flag that injects a skill file as system prompt; route.py appends it with the
 #               ticket type's skill

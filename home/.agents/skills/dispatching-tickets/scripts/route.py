@@ -5,7 +5,7 @@
     python3 route.py <estate-dir> <type> --author <provider>     # a review: never the author's provider
 
 Prints JSON: the chosen profile, its provider, the skill file it starts with, the full argument
-list for `herdr agent start ... --`, and every candidate's pace so the choice can be reported.
+list for `hc run ... --`, and every candidate's pace so the choice can be reported.
 
 Candidates are the type's `profiles`, minus exhausted ones, minus the author's provider for a
 review. A fixed type takes the first that remains. A fungible type takes the one whose provider

@@ -25,7 +25,7 @@ NOW = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
 
 class Estate(unittest.TestCase):
     """A scratch estate built from the shipped template, a fake HOME holding the routed skills,
-    and a fake herdr whose agent list each test controls."""
+    and a fake hc whose terminal list each test controls."""
 
     def setUp(self):
         scratch = tempfile.TemporaryDirectory(prefix="dispatching-tickets-")
@@ -48,17 +48,17 @@ class Estate(unittest.TestCase):
             (home / ".agents/skills" / skill / "SKILL.md").write_text("skill\n")
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
-        herdr = bin_dir / "herdr"
-        herdr.write_text(textwrap.dedent("""\
+        hc = bin_dir / "hc"
+        hc.write_text(textwrap.dedent("""\
             #!/bin/sh
-            [ -n "$FAKE_HERDR_FAIL" ] && { echo "herdr unreachable" >&2; exit 1; }
-            cat "$FAKE_HERDR_AGENTS"
+            [ -n "$FAKE_HC_FAIL" ] && { echo "hc unreachable" >&2; exit 1; }
+            case "$*" in *--label*) echo '{"terminals": []}' ;; *) cat "$FAKE_HC_LS" ;; esac
             """))
-        herdr.chmod(0o755)
+        hc.chmod(0o755)
         self.agents_file = self.root / "agents.json"
         self.live()
         self.env = dict(os.environ, HOME=str(home), PATH=f"{bin_dir}:{os.environ['PATH']}",
-                        FAKE_HERDR_AGENTS=str(self.agents_file))
+                        FAKE_HC_LS=str(self.agents_file))
 
     def quota(self, read_at=NOW, **used):
         self.estate.joinpath("quota.toml").write_text("".join(
@@ -66,7 +66,9 @@ class Estate(unittest.TestCase):
             for p, u in used.items()))
 
     def live(self, *names):
-        self.agents_file.write_text(json.dumps({"result": {"agents": [{"name": n} for n in names]}}))
+        self.agents_file.write_text(json.dumps({"machines": [], "terminals": [
+            {"address": f"t{i}", "name": n, "state": "live", "cwd": "/home", "status": "working"}
+            for i, n in enumerate(names, 1)]}))
 
     def exhaust(self, profile):
         toml = self.estate / "estate.toml"
@@ -135,8 +137,8 @@ class RouteTests(Estate):
 
     def test_unreadable_agent_list_refuses(self):
         self.assertIn("cannot read the agent list",
-                      self.refused(ROUTE, "implementation", FAKE_HERDR_FAIL="1"))
-        self.assertEqual(self.route("research", FAKE_HERDR_FAIL="1")["profile"], "grok")
+                      self.refused(ROUTE, "implementation", FAKE_HC_FAIL="1"))
+        self.assertEqual(self.route("research", FAKE_HC_FAIL="1")["profile"], "grok")
 
     def test_estate_without_routing_uses_active(self):
         toml = self.estate / "estate.toml"

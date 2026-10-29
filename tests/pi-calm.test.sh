@@ -17,7 +17,7 @@
 #   degradation with one clear diagnostic;
 # - working ship: geometry, cadence, colors, resize, narrow fallback,
 #   freeze/resume, timer disposal, extension lifecycle;
-# - real Pi 0.82 TUI proofs in tmux without credentials or provider calls.
+# - real Pi TUI proofs (the installed version) in tmux without credentials or provider calls.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -32,6 +32,17 @@ default_pi_package_dir() {
     && [ -f "$brew_prefix/libexec/lib/node_modules/$pkg/package.json" ]; then
     printf '%s\n' "$brew_prefix/libexec/lib/node_modules/$pkg"
     return
+  fi
+  # A user-prefix npm install (the agent VM) links `pi` into the package's own dist.
+  local dir
+  if dir=$(readlink -f "$(command -v pi 2>/dev/null)" 2>/dev/null) && [ -n "$dir" ]; then
+    while [ "$dir" != / ] && [ "$dir" != . ]; do
+      dir=$(dirname "$dir")
+      case "$dir" in
+        */node_modules/"$pkg")
+          [ -f "$dir/package.json" ] && { printf '%s\n' "$dir"; return; } ;;
+      esac
+    done
   fi
   printf '%s\n' "$(npm root -g 2>/dev/null)/$pkg"
 }
@@ -598,8 +609,10 @@ test_real_pi_tui_smoke() {
     echo "skip: pi or tmux not found for isolated real TUI smoke"
     return 0
   fi
-  [ "$(pi --version 2>/dev/null || true)" = "0.82.0" ] \
-    || fail "real Pi smoke requires the installed Pi 0.82.0 proof target"
+  local tested
+  tested=$(node -p "require('$PI_PACKAGE_DIR/package.json').version" 2>/dev/null || true)
+  [ -n "$tested" ] && [ "$(pi --version 2>/dev/null || true)" = "$tested" ] \
+    || fail "real Pi smoke requires the pi on PATH to be the Pi $tested package under test"
 
   fixture="$TMP_ROOT/tui-smoke"
   agent="$fixture/agent"
@@ -714,7 +727,7 @@ TS
   tmux -L "$socket" send-keys -t "$TMUX_SESSION" Enter
   sleep 0.1
   tmux -L "$socket" kill-server 2>/dev/null || true
-  pass "isolated Pi 0.82 TUI proves auto-load, /calm persistence, resize-safe working animation, and genuine transcript text without credentials"
+  pass "isolated real Pi $tested TUI proves auto-load, /calm persistence, resize-safe working animation, and genuine transcript text without credentials"
 }
 
 test_zero_coupling_and_state_file
