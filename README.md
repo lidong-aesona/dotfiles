@@ -243,7 +243,7 @@ Pi's package system declares four third-party sources in the linked global `sett
 - `npm:@narumitw/pi-statusline@0.50.2` - a Powerline footer with model, workspace,
   Git, context usage, and activity. Configure it with `/statusline`; preferences
   stay in the unmanaged `~/.pi/agent/pi-statusline.json` file.
-- `npm:pi-subagents@0.74.0` - single-agent delegation and scripted multi-agent
+- `npm:pi-subagents@0.82.1` - single-agent delegation and scripted multi-agent
   workflows from `nicobailon`, with bundled agents, prompts, and skills.
 
 The versions are immutable pins, so Pi does not move them during package updates. Deliberate updates require a new source and security audit, followed by an explicit pin change in `home/.pi/agent/settings.json`. On Pi 0.82.0, global settings declarations install missing pinned packages automatically at startup. No one-time install command is required. Pi keeps the downloaded npm package trees in its own unmanaged `~/.pi/agent/npm` runtime directory, outside Home Manager and Git tracking.
