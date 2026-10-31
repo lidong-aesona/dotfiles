@@ -15,6 +15,14 @@
 - Claude workers must run `/code-review` with its native review subagents; a blanket no-subagents instruction must not cause them to skip it or substitute self-review. Review subagents are distinct from additional ticket workers or swarms.
 - Before using "dynamic workflows", "ultra code" or any harness feature that immediately spawns a large swarm of subagents, always explain the tradeoffs and ask the user for explicit approval.
 
+## Session todo list
+
+For multi-step work in an hc terminal (`$HC_TERMINAL_ID` is set), keep a checklist at `~/.agents/todos/$HC_TERMINAL_ID.md` on the machine you run on. The owner's Herdr right panel shows it for the focused session.
+
+- At the start, overwrite the file with a `# Title` line and one `- [ ] item` per step.
+- As you work, mark the current item `- [~]`, finished items `- [x]` and dropped items `- [-]`. Add items as the plan changes.
+- Skip it for single-step work or when `$HC_TERMINAL_ID` is unset.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
