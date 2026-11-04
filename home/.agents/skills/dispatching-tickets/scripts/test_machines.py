@@ -613,6 +613,20 @@ def test_launch_fetches_verifies_starts_and_delivers_assembled_prompt(cfg):
     assert 'Machine: mac; agent: mac-7-codex; space: ticket-7' in (cfg['_root'] / 'tickets/7/head.md').read_text()
 
 
+def test_launch_names_the_space_and_delivers_even_when_naming_fails(cfg):
+    tracker = launch_fakes(cfg)
+    created = dict(tree(cfg), branch='build/7-work', path=MAC_TREE)
+    with patch.object(D, 'target', return_value='mac'), patch.object(E, 'inventory', return_value=([], [])), \
+         patch.object(frontier, 'Tracker', return_value=tracker), patch.object(E, 'worktrees', return_value=[created]), \
+         patch.object(E, 'machine_call', side_effect=lambda *a, **k: 'a' * 40 if 'rev-parse' in a else ''), \
+         patch.object(E, 'call', side_effect=launch_hc()), patch.object(E, 'run', return_value=Mock(returncode=0)), \
+         patch.object(D.H, 'name', side_effect=E.Refused('app closed')) as names, \
+         patch.object(D, 'send_file') as send, patch.object(D, 'read_tail', return_value={'classification': 'stopped'}):
+        D.launch(cfg, 7, 'app', 'work')
+    assert names.call_args.args[1:] == (7, 'mac/mac-7-codex')
+    send.assert_called_once()
+
+
 @pytest.mark.parametrize('status', [None, 'working', 'blocked'])
 def test_launch_never_sends_to_an_agent_that_is_not_idle(cfg, status):
     tracker = launch_fakes(cfg)

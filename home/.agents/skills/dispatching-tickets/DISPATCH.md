@@ -65,9 +65,10 @@ From the profile `route.py` chose, with the `args` it printed, which already car
 hc run --bg --name <agent_prefix><n><suffix> --cwd <worktree> --no-parent --outlive-parent \
   --label herdr.space=ticket-<key> -- <kind> <args, one word each>
 hc wait <name> --timeout <timeout_ms / 1000>
+python3 ~/.agents/skills/dispatching-tickets/scripts/herdr_names.py <estate> <key> <name>
 ```
 
-`--no-parent --outlive-parent` keep the agent alive after the tick that started it ends. The `herdr.space` label shows it in the Herdr app, in one space per ticket. The wait ends when the agent first goes idle; confirm with `hc get --json <name>` that `status.state` is `idle` before submitting. Names are 1-32 of `a-z 0-9 - _`.
+`--no-parent --outlive-parent` keep the agent alive after the tick that started it ends. The `herdr.space` label shows it in the Herdr app, in one space per ticket. `herdr_names.py` names that space `<key> <ticket title>` and the agent's tab `author <name>` or `reviewer <name>`, through the app on the estate's `herdr_app` machine; it does nothing without that key. A `!! names not set` line is cosmetic: note it in the tick report and go on. The wait ends when the agent first goes idle; confirm with `hc get --json <name>` that `status.state` is `idle` before submitting. Names are 1-32 of `a-z 0-9 - _`.
 
 ## 7. Submit the prompt (local)
 
