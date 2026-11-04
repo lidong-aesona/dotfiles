@@ -12,6 +12,10 @@ tracker = "OWNER/REPO"
 # prefix when two estates share one machine, or their ticket numbers collide.
 agent_prefix = "ticket-"
 
+# The machine whose Herdr app shows this estate ("" is this host). herdr_names.py names
+# each ticket's space and agent tab there. Leave it out to keep the app's own names.
+# herdr_app = "mac"
+
 # Seconds between ticks.
 cadence_seconds = 1500
 

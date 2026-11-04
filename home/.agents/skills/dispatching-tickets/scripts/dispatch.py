@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import estate as E
+import herdr_names as H
 import prompt as P
 
 
@@ -156,6 +157,10 @@ def launch(cfg, n, repo_name, slug):
     # The first prompt goes in only once the agent is ready.
     if not E.wait_ready(E.address(machine, name), max(1, profile.get('timeout_ms', 180000) // 1000)):
         raise E.Refused(f'{name} is not ready for its prompt; read it, do not resend')
+    try:
+        H.name(cfg, n, E.address(machine, name))
+    except E.Refused as e:
+        print(f'!! names not set: {e}', file=sys.stderr)
     send_file(cfg, machine, name, prompt)
     return read_tail(cfg, machine, name)
 

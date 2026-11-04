@@ -41,7 +41,7 @@ The estate's `blocks/closing-mandate.md` decides which pull requests get a secon
 
 1. **Route**: `route.py <estate> security-review --author <author's provider>` for a `security` ticket or a security-path diff, `review` for a `design` ticket, or `breakdown-review` for a `breakdown` ticket.
 2. **Brief**: write `tickets/<n>/review-head.md`: the ticket, the PR link (for a breakdown, the epic, its sub-issues and the breakdown comment, with section 6's checks), the author's provider, and the verification the ticket names. Assemble it with `prompt.py <estate> <n> --review --profile <profile>`.
-3. **Start** the reviewer in the worktree, in the ticket's space (`--label herdr.space=ticket-<n>`, DISPATCH.md section 6), named `<agent_prefix><n>r<suffix>`, and submit `tickets/<n>/review.prompt.md`. The reviewer only reads the worktree; the author stays its one writer.
+3. **Start** the reviewer in the worktree, in the ticket's space (`--label herdr.space=ticket-<n>`, DISPATCH.md section 6), named `<agent_prefix><n>r<suffix>`, run `herdr_names.py` for it, and submit `tickets/<n>/review.prompt.md`. The reviewer only reads the worktree; the author stays its one writer.
 4. **Relay**: when the reviewer reports its verdict, tell the author to read the review on the PR. On changes requested, the author fixes and reports `Ready for re-review`; prompt the same reviewer to re-review. On approve, remove the reviewer (`hc kill <name> && hc rm <name>`) and tell the author to merge.
 
 A reviewer and an author that disagree twice on the same finding go to the owner, quoted side by side.

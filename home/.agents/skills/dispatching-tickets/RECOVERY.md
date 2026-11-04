@@ -72,6 +72,7 @@ For an exhausted agent, an escalation, and an `orphaned` ticket whose agent is a
    hc run --bg --name <agent_prefix><n><suffix> --cwd <worktree path> --no-parent --outlive-parent \
      --label herdr.space=ticket-<n> -- <kind> <args from route.py>
    hc wait <new name> --timeout <timeout_ms / 1000>
+   python3 ~/.agents/skills/dispatching-tickets/scripts/herdr_names.py <estate> <n> <new name>
    hc send <new name> "$(cat <estate>/tickets/<n>/handover.prompt.md)"
    ```
 
