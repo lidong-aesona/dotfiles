@@ -160,6 +160,17 @@ class SharedSettingsTests(unittest.TestCase):
         self.assertNotIn("autoMode", merged)
         self.assertNotIn("permissions", merged)
 
+    def test_every_shared_hook_event_merges_beside_local_hooks(self):
+        shared = json.loads(SHARED.read_text())["hooks"]
+        local_post = {"matcher": "Bash", "hooks": [{"type": "command", "command": "local-post"}]}
+        merged = self.merge({"hooks": {"PostToolUse": [local_post]}})
+        for event, hooks in shared.items():
+            with self.subTest(event=event):
+                for hook in hooks:
+                    self.assertIn(hook, merged["hooks"][event])
+        self.assertEqual(merged["hooks"]["PostToolUse"][0], local_post)
+        self.assertEqual(self.merge(merged), merged)
+
     def test_shared_file_without_hooks_does_not_create_or_remove_local_hooks(self):
         with tempfile.TemporaryDirectory(prefix="claude-settings-") as scratch:
             shared = Path(scratch) / "settings.json"

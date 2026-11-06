@@ -97,6 +97,7 @@ in
       ".config/nvim" = linked "home/.config/nvim";
       ".claude/statusline.sh" = linked "home/.claude/statusline.sh";
       ".claude/hooks/session-notes.py" = linked "home/.claude/hooks/session-notes.py";
+      ".claude/hooks/herdr-activity.mjs" = linked "home/.claude/hooks/herdr-activity.mjs";
       ".pi/agent/themes" = linked "home/.pi/agent/themes";
       ".pi/agent/extensions" = linked "home/.pi/agent/extensions";
       ".pi/agent/models.json" = linked "home/.pi/agent/models.json";
@@ -120,7 +121,7 @@ in
   ];
 
   # Claude settings.json is not linked on Linux: it names trusted repo paths.
-  # Merge portable preferences and SessionStart hooks; preserve autoMode/permissions.
+  # Merge portable preferences and shared hooks; preserve autoMode/permissions.
   home.activation.claudeSharedSettings = lib.mkIf (!darwin) (
     lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       f="$HOME/.claude/settings.json"

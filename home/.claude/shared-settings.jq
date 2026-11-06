@@ -1,4 +1,4 @@
-# Share portable preferences and SessionStart hooks; preserve machine-local policy.
+# Share portable preferences and every shared hook; preserve machine-local policy.
 . as $local
 | $shared[0] as $shared
 | ($shared | {
@@ -13,10 +13,9 @@
     modelSettings
   } | with_entries(select(.value != null))) as $portable
 | $local + $portable
-| if (($shared.hooks.SessionStart // []) | length) == 0 then .
-  else .hooks.SessionStart = (
-    reduce ($shared.hooks.SessionStart // [])[] as $hook
-      (.hooks.SessionStart // [];
-       if index($hook) == null then . + [$hook] else . end)
-  )
-  end
+| reduce (($shared.hooks // {}) | to_entries[]) as $event (.;
+    .hooks[$event.key] = (
+      reduce $event.value[] as $hook
+        (.hooks[$event.key] // [];
+         if index($hook) == null then . + [$hook] else . end)
+    ))
