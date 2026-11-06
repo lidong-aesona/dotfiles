@@ -102,7 +102,7 @@ git clone https://github.com/lidong-aesona/dotfiles.git ~/.dotfiles
 ```
 
 Auth, sessions, and Claude `settings.json` stay on each machine.
-`settings.json` names trusted repo paths, so the VM keeps its own file; a switch merges portable keys (including the 300k auto-compact window) and shared SessionStart hooks into it, preserving local policy and other hooks.
+`settings.json` names trusted repo paths, so the VM keeps its own file; a switch merges portable keys (including the 300k auto-compact window) and every shared hook into it, preserving local policy and other hooks.
 Pi `auth.json` is never linked.
 Skills are not in this public repo. From the Mac:
 
@@ -190,13 +190,28 @@ sessions stay on their machine; use an explicit handoff to transfer work.
 
 Apply new file links with `./rebuild.sh` on each machine. The normal merge-to-main
 workflow also applies the VM configuration. On Linux, `home/.claude/shared-settings.jq`
-merges shared SessionStart hooks without duplicating them on repeated switches
+merges every shared hook without duplicating it on repeated switches
 or replacing other hooks, permissions, or machine-specific policy.
 
 Validate the hook and settings merge with:
 
 ```sh
 python3 tests/claude-context.test.py
+```
+
+### File activity for the herdr filetree mod
+
+`home/.claude/hooks/herdr-activity.mjs` records the files Claude reads, searches,
+writes and commits, and the paths a prompt names with `@path`. It appends one JSON
+line per event to `~/.local/state/herdr-filetree/activity.jsonl`, which the herdr
+filetree mod reads to flash and reveal those files. The shared `UserPromptSubmit`,
+`PreToolUse`, `PostToolUse` and `PostToolUseFailure` hooks run it with `node` on
+each tool call. `home/.pi/agent/extensions/herdr-activity.js` writes the same
+records from Pi's tool events through the same module. The file stays below
+256 KB. Validate with:
+
+```sh
+node --test tests/herdr-activity.test.mjs
 ```
 
 ## Pi configuration
